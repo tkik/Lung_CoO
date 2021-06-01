@@ -1,0 +1,855 @@
+---
+title: "MeDeCom results"
+author: "Reka Toth"
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+
+
+```{r libraries, message=FALSE, warning=FALSE, include=FALSE}
+
+#Libraries
+library(DSS)
+library(bsseq)
+library(doParallel)
+library(ChIPseeker)
+library(foreach)
+library(SummarizedExperiment)
+library(rtracklayer)
+library(HDF5Array)
+library(org.Mm.eg.db)
+library(plotly)
+library(kableExtra)
+library(pheatmap)
+library(annotatr)
+library(readxl)
+library(dplyr)
+library(ggrepel)
+library(DOSE)
+library(enrichplot)
+library(fgsea)
+library(ggsci)
+
+```
+
+```{r directories, message=TRUE, warning=FALSE, include=FALSE}
+
+####colors####
+
+sftpc_col <- "#20854EFF"
+scgb1a1_col <- "#E18727FF"
+hopx_col <- "#6F99ADFF"
+
+normal_col <- "#7876B1FF"
+tumor_col <- "#EE4C97FF"
+
+tdTom_col = "#e84118"
+GFP_col = "#4cd137"
+
+###########libraries and functions#############
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH ="V:/"} else {
+    PATH ="/C010-projects/"}
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH_Y="N:/"} else {
+    PATH_Y="/C010-datasets/"}
+
+DATA = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/data/norfp/")
+DATA_meth = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/data/")
+RESULT = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/output/")
+CALLS = paste0(PATH_Y, "External/2018-10-Sotillo/data/methylDackel/")
+CODE = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/code/")
+HOMER_RESULTS <- paste0(RESULT, "homer_res/enhancers/")
+
+
+Cellpaper <- c("#313695","#4575b4", "#74add1", "#abd9e9","#e0f3f8","#ffffbf","#fee090","#fdae61","#f46d43","#d73027","#a50026")
+
+volcano_plot_correlation <- function(data, x, y, label){
+  data<-  data %>%
+    arrange(desc(abs(get(x))),desc(get(y))) %>%
+    mutate(new_labels=replace(get(label), duplicated(get(label)), NA))
+  g <- ggplot(data, aes_string(x=x, y=y, label="new_labels")) + 
+    geom_point()+geom_label_repel(max.overlaps = Inf)+ggtitle(paste0("Best correlating genes, ", x))
+
+  g
+}
+
+
+CapStr <- function(y) {
+      paste(toupper(substring(y, 1,1)), substring(y, 2),
+                         sep="")
+   }
+
+
+gseaplot2 <- function(geneSetID, title = "", color = "green",
+                      base_size = 11, rel_heights = c(1.5, 0.5, 1), subplots = 1:3,
+                      pvalue_table = FALSE, ES_geom = "line", ranks, geneSet, pvaluetable) {
+
+  ES_geom <- match.arg(ES_geom, c("line", "dot"))
+  geneList <- position <- NULL
+  gsdata2 <- do.call(rbind, lapply(geneSetID, function(id) gsInfo2(geneSetID=id, geneset = geneSet, res = ranks)))
+  p <- ggplot(gsdata2, aes_(x = ~x)) + xlab(NULL) + theme_classic(base_size) +
+    theme(panel.grid.major = element_line(colour = "grey92"),
+          panel.grid.minor = element_line(colour = "grey92"),
+          panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank()) +
+    scale_x_continuous(expand = c(0, 0))
+
+  es_layer <- geom_line(aes_(y = ~runningScore, color = ~Description),
+                        size = 1)
+
+  p.res <- p + es_layer + theme(legend.position = c(0.8, 0.8),
+                                legend.title = element_blank(), legend.background = element_rect(fill = "transparent"))
+
+  p.res <- p.res + ylab("Running Enrichment Score") +
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+          axis.line.x = element_blank(), plot.margin = margin(t = 0.2,
+                                                              r = 0.2, b = 0, l = 0.2, unit = "cm"))
+  p.res <- p.res + geom_hline(yintercept=0, linetype = "dashed", color="grey")
+
+  i <- 0
+
+  for (term in unique(gsdata2$Description)) {
+    idx <- which(gsdata2$ymin != 0 & gsdata2$Description ==
+                   term)
+    gsdata2[idx, "ymin"] <- i
+    gsdata2[idx, "ymax"] <- i + 1
+    i <- i + 1
+  }
+
+  #browser()
+
+  p2 <- ggplot(gsdata2, aes_(x = ~x)) + geom_linerange(aes_(ymin = ~ymin,
+                                                            ymax = ~ymax, color = ~Description)) + xlab(NULL) + ylab(NULL) +
+    theme_classic(base_size) + theme(legend.position = "none",
+                                     plot.margin = margin(t = -0.1, b = 0, unit = "cm"),
+                                     axis.ticks = element_blank(), axis.text = element_blank(),
+                                     axis.line.x = element_blank()) + scale_x_continuous(expand = c(0,
+                                                                                                    0)) + scale_y_continuous(expand = c(0, 0))
+  df2 <- p$data
+  df2$y <- p$data$geneList[df2$x]
+  p.pos <- p + geom_segment(data = df2, aes_(x = ~x, xend = ~x,
+                                             y = ~y, yend = 0), color = "grey")
+  p.pos <- p.pos + ylab("Correlation Coefficient") + xlab("Rank in Ordered Dataset") +
+    theme(plot.margin = margin(t = -0.1, r = 0.2, b = 0.2,
+                               l = 0.2, unit = "cm"))+scale_x_continuous(expand = c(0, 0))
+
+  if (!is.null(title) && !is.na(title) && title != "")
+    p.res <- p.res + ggtitle(title)
+
+  if (length(color) == length(geneSetID)) {
+    p.res <- p.res + scale_color_manual(labels= paste0(c(pvaluetable[geneSetID,"pathway"]$pathway), ", p value= ", round(c(pvaluetable[geneSetID , "pval"])$pval, digits = 3)),
+                                        values = color)
+    if (length(color) == 1) {
+      p.res <- p.res + theme(legend.position = "none")
+      p2 <- p2 + scale_color_manual(values = "black")
+    }
+    else {
+      p2 <- p2 + scale_color_manual(values = color)
+    }
+  }
+
+  if (pvalue_table) {
+    pd <- pvaluetable[geneSetID , c("pathway", "pval",
+                         "padj")]
+    pd <- pd[order(pd[, 1], decreasing = FALSE), ]
+    rownames(pd) <- pd$pathway
+    pd <- pd[, -1]
+    pd <- round(pd, 4)
+    tp <- enrichplot:::tableGrob2(pd, p.res)
+    p.res <- p.res + theme(legend.position = "none") +
+      annotation_custom(tp, xmin = quantile(p.res$data$x,
+                                            0.5), xmax = quantile(p.res$data$x, 0.95), ymin = quantile(p.res$data$runningScore,
+                                                                                                       0.75), ymax = quantile(p.res$data$runningScore,
+                                                                                                                              0.9))
+  }
+
+  plotlist <- list(p.res, p2, p.pos)[subplots]
+  n <- length(plotlist)
+  plotlist[[n]] <- plotlist[[n]] + theme(axis.line.x = element_line(),
+                                         axis.ticks.x = element_line(), axis.text.x = element_text())
+  if (length(rel_heights) > length(subplots))
+    rel_heights <- rel_heights[subplots]
+  plot_grid(plotlist = plotlist, ncol = 1, align = "v",
+            rel_heights = rel_heights)
+
+
+}
+
+
+
+gsInfo2 <-  function (geneset=marker_lists_short, geneSetID, res=lmc1_rank)
+{
+  geneList <- res
+  if (is.numeric(geneSetID))
+    geneSetID <- names(geneset)[geneSetID]
+  geneSet <- geneset[[geneSetID]]
+  exponent <- 1
+  df <- DOSE:::gseaScores(res, geneSet, exponent, fortify = TRUE)
+  df$ymin <- 0
+  df$ymax <- 0
+  pos <- df$position == 1
+  h <- diff(range(df$runningScore))/20
+  df$ymin[pos] <- -h
+  df$ymax[pos] <- h
+  df$geneList <- res
+  df$Description <- geneSetID
+  return(df)
+}
+
+
+###################
+
+
+
+```
+
+
+```{r}
+
+
+res <- readRDS(paste0(DATA_meth, "no_snps_methrix.RDS"))
+
+
+##remove MsCCSP_control01, because of bad QC values
+
+res <- methrix::subset_methrix(res, samples = attr(res@colData, "rownames")[-which(attr(res@colData, "listData")$full_name=="MsCCSP_control01")])
+res <- methrix::subset_methrix(res, samples = attr(res@colData, "rownames")[-which(attr(res@colData, "listData")$full_name=="MsCCSP_control05")])
+res <- methrix::subset_methrix(res, samples = attr(res@colData, "rownames")[-which(attr(res@colData, "listData")$full_name=="MsKrt5_tumor01-rfp")])
+res <- methrix::subset_methrix(res, samples = rownames(res@colData)[-grep("rfp", res@colData$full_name)])
+
+#annotation <- read.delim(file=file.path(DATA, "annotation_table_TAGWGBS_02_10.txt"),stringsAsFactors = F)
+
+res <- methrix::subset_methrix(res, contigs = c(paste0("chr", 1:19)))
+
+```
+
+
+```{r, message=TRUE, warning=FALSE, include=FALSE}
+
+source(file.path(PATH,  "Reka/33_CoO_lung/scRNASeq/code/get_markers.R"))
+
+```
+
+# MeDeCom analysis using bivalent enhancers in controls
+
+Fitting the model on the 10000 most variable sites overlapping with poised enhancers. The model is only based on controls.
+
+
+```{r , message=FALSE, warning=FALSE}
+mat  <- as.data.frame(readRDS(paste0(DATA, "medecom/bivalent_enhancers.RDS")))
+```
+
+MeDeCom model optimization
+
+```{r eval=F, message=FALSE, warning=FALSE, include=FALSE}
+#medecom.result2 <- MeDeCom::runMeDeCom(as.matrix(mat_control), 2:6, c(0, 10^(-5:-1)), NINIT = 10, NFOLDS = 10, ITERMAX = 300, NCORES = 8)
+#saveRDS(medecom.result2, file = paste0(DATA, "medecom/poised_enhancers_controls.RDS"))
+
+medecom.result <-  readRDS( file = paste0(DATA, "medecom/poised_enhancers_controls.RDS"))
+
+MeDeCom::plotParameters(MeDeComSet = medecom.result)
+
+
+K_sel <- 4
+lambda_sel <- 0.0001
+proportions <- MeDeCom::getProportions(medecom.result, K=K_sel, lambda=lambda_sel)
+colnames(proportions) <- colnames(mat_control)
+
+LMCs <- MeDeCom::getLMCs(medecom.result, K=K_sel, lambda=lambda_sel)
+colnames(LMCs) <- paste0("LMC", 1:K_sel)
+LMCs <- cbind(mat[,1:3], LMCs)
+```
+
+
+Data annotation and plotting
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE, results='asis'}
+annotation <- data.frame(staining=gsub("(Ms[[:alnum:]]+)_(tumor|control)[[:digit:]]+(.rfp)?", "\\1", colnames(mat_control)),
+                         type= gsub("(Ms[[:alnum:]]+)_(tumor|control)[[:digit:]]+(.rfp)?", "\\2", colnames(mat_control)),
+                         origin = ifelse(grepl("rfp", colnames(mat_control)), "RFP", "GFP"))
+rownames(annotation) <- colnames(mat_control)
+cat("Annotation table: \n")
+print(xtable::xtable(annotation), type="html")
+
+p <- pheatmap(proportions,  show_colnames = T, legend = F, annotation_legend = T, fontsize = 12, annotation_col = annotation)
+p
+```
+
+Including the tumor samples into the model based on controls only
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+which_mat <- which(medecom.result@parameters$Ks==K_sel)+(which(medecom.result@parameters$lambdas==lambda_sel)-1)*length(medecom.result@parameters$Ks)
+
+all_Ts <- MeDeCom::factorize.regr(D= as.matrix(mat[,-(1:3)]), Tt = medecom.result@outputs$`1`$T[[which_mat]])
+#all_Ts <- readRDS(file.path(DATA, "all_Ts.RDS"))
+
+proportions_all <- all_Ts$A
+colnames(proportions_all) <- colnames(mat[,-(1:3)])
+rownames(proportions_all) <- rownames(proportions)
+
+annotation <- data.frame(staining=gsub("(Ms[[:alnum:]]+)_(tumor|control)[[:digit:]]+(.rfp)?", "\\1", colnames(mat[,-(1:3)])),
+                         type= gsub("(Ms[[:alnum:]]+)_(tumor|control)[[:digit:]]+(.rfp)?", "\\2", colnames(mat[,-(1:3)])),
+                         origin = ifelse(grepl("rfp", colnames(mat[,-(1:3)])), "RFP", "GFP"))
+rownames(annotation) <- colnames(mat[,-(1:3)])
+
+#annotation$ID <- colnames(mat[,-(1:3)])
+
+
+
+pheatmap(proportions_all,  show_colnames = T, legend = F, annotation_legend = T, fontsize = 12, annotation_col = annotation)
+
+
+
+```
+
+# MeDeCom analysis using bivalent enhancers in all samples
+
+```{r message=FALSE, warning=FALSE}
+# MeDeCom analysis using bivalent enhancers in controls
+
+#medecom.result2 <- MeDeCom::runMeDeCom(as.matrix(mat[,-(1:3)]), 2:6, c(0, 10^(-5:-1)), NINIT = 10, NFOLDS = 10, ITERMAX = 300, NCORES = 8)
+#saveRDS(medecom.result2, file = paste0(DATA, "medecom/poised_enhancers.RDS"))
+
+medecom.result2 <-  readRDS( file = paste0(DATA, "medecom/poised_enhancers_new_samples.RDS"))
+MeDeCom::plotParameters(MeDeComSet = medecom.result2)
+```
+
+Model optimization
+
+```{r message=FALSE, warning=FALSE}
+K_sel <- 4
+lambda_sel <- 0.001
+proportions <- MeDeCom::getProportions(medecom.result2, K=K_sel, lambda=lambda_sel)
+
+colnames(proportions) <- colnames(mat[,-(1:3)])
+
+
+LMCs <- MeDeCom::getLMCs(medecom.result2, K=K_sel, lambda=lambda_sel)
+colnames(LMCs) <- paste0("LMC", 1:K_sel)
+#LMCs <- cbind(mat[,1:3], LMCs)
+rownames(proportions) <- paste0("LMC", c(1,2,4,3))
+
+```
+
+Annotation and plotting 
+
+```{r message=FALSE, warning=FALSE, results='asis'}
+annotation <- data.frame(staining=gsub("(Ms[[:alnum:]]+)_(tumor|control)[[:digit:]]+(.rfp)?", "\\1", colnames(mat[,-(1:3)])),
+                         type= gsub("(Ms[[:alnum:]]+)_(tumor|control)[[:digit:]]+(.rfp)?", "\\2", colnames(mat[,-(1:3)])),
+                         origin = ifelse(grepl("rfp", colnames(mat[,-(1:3)])), "RFP", "GFP"))
+rownames(annotation) <- colnames(mat[,-(1:3)])
+print(xtable::xtable(annotation), type="html")
+
+try(pheatmap(proportions,  show_colnames = T, legend = F, annotation_legend = T, fontsize = 12, annotation_col = annotation))
+
+```
+  
+
+
+# Calculating correlation
+
+```{r correlation}
+
+
+promoters <- build_annotations("mm10", "mm10_genes_promoters")
+
+
+promoter_methylation <- methrix::get_region_summary(res, promoters)
+promoter_methylation$symbol <- promoters$symbol[promoter_methylation$rid]
+promoter_methylation <- as.data.frame(promoter_methylation)
+
+promoter_methylation <- promoter_methylation %>% 
+   filter(n_overlap_CpGs>1) %>% 
+   filter(apply(., 1, function(x) sum(is.na(x)))<10) 
+
+promoter_methylation_control <- promoter_methylation %>% 
+  select(-grep("tumor", colnames(.)))
+
+promoter_methylation <- promoter_methylation[complete.cases(promoter_methylation[,grep("Ms", colnames(promoter_methylation))]),]
+promoter_methylation_control <- promoter_methylation_control[complete.cases(promoter_methylation_control[,grep("Ms", colnames(promoter_methylation_control))]),]
+
+
+
+proportions_control <- proportions[,-grep("tumor", colnames(proportions))]
+
+
+datasets_combined <- list("all"=list(promoter_methylation, proportions), 
+                          "control"=list(promoter_methylation_control, proportions_control))
+
+datasets <- datasets_combined[[2]]
+
+
+T_all <- MeDeCom:::getT.gini(D=as.matrix(datasets[[1]][,grep("Ms", colnames(datasets[[1]]))]), A = datasets[[2]], lambda = lambda_sel)
+colnames(T_all) <- paste0("gini_LMC", 1:K_sel)
+datasets[[1]] <- cbind(datasets[[1]], T_all)
+
+datasets[[1]] <- datasets[[1]] %>%
+  "[<-"(paste0("LMC", 1:4), value = NA_real_) %>%
+   "[<-"(paste0("LMC", 1:4, "_p"), value = NA_real_)
+
+
+for (LMCs in paste0("LMC", 1:4)){
+  
+est <-lapply(1:nrow(datasets[[1]]), function(x)
+  cor.test(datasets[[2]][LMCs,],  as.numeric(datasets[[1]][x,-c(1:5, which(colnames(datasets[[1]])=="symbol"), grep("LMC", colnames(datasets[[1]])))]), method = "pears"))
+datasets[[1]][,LMCs] <- unlist(lapply(est, function(x) x$estimate))
+datasets[[1]][,paste0(LMCs, "_p")] <- -log10(unlist(lapply(est, function(x) x$p.value)))
+
+}
+
+#fun_filt <- function(val, pval){
+#  ifelse(abs(val)>0.8 & -log10(pval)>5, symbol, NA)
+#}
+
+#datasets[[1]] <- datasets[[1]] %>%
+#  mutate(across(c(Sepal.Length, Sepal.Width), round))
+#    mutate(new_labels=replace(get(label), duplicated(get(label)), NA))
+    
+datasets[[1]] <- datasets[[1]] %>%
+  mutate(LMC1_label=ifelse(abs(LMC1)>0.9 & LMC1_p>5, symbol, NA))
+
+datasets[[1]] <- datasets[[1]] %>%
+  mutate(LMC2_label=ifelse(abs(LMC2)>0.9 & LMC2_p>5, symbol, NA))
+
+datasets[[1]] <- datasets[[1]] %>%
+  mutate(LMC3_label=ifelse(abs(LMC3)>0.9 & LMC3_p>5, symbol, NA))
+
+datasets[[1]] <- datasets[[1]] %>%
+  mutate(LMC4_label=ifelse(abs(LMC4)>0.9 & LMC4_p>5, symbol, NA))
+
+
+vars <- names(marker_lists_short)
+
+
+datasets[[1]] <- datasets[[1]] %>%
+#  mutate(across(colnames(.) %in% vars) ~ case_when(symbol %in% marker_lists_short[[.]]))
+  mutate(AT1_markers=ifelse(symbol %in% marker_lists_short$`AT1 cells`, symbol, NA)) %>% 
+  mutate(AT2_markers=ifelse(symbol %in% marker_lists_short$`AT2 cells`, symbol, NA)) %>%
+  mutate(basal_markers=ifelse(symbol %in% marker_lists_short$`basal cells`, symbol, NA)) %>%
+  mutate(ciliated_markers=ifelse(symbol %in% marker_lists_short$`ciliated cells`, symbol, NA)) %>%
+  mutate(club_markers=ifelse(symbol %in% marker_lists_short$`club cells`, symbol, NA)) %>%
+  mutate(goblet_markers=ifelse(symbol %in% marker_lists_short$`goblet cells`, symbol, NA)) %>%
+  mutate(Krt8_markers=ifelse(symbol %in% marker_lists_short$`Krt8 ADI`, symbol, NA)) %>%
+  mutate(AT1_AT2_markers=ifelse(symbol %in% marker_lists_short$`Mixed AT1_AT2`, symbol, NA))# %>%
+ # mutate(club_progenitor_markers=ifelse(symbol %in% marker_lists_short$`Club progenitor`, symbol, NA))
+
+
+#volcano_plot <- ggplot(datasets[[1]], aes(x=LMC1, y=-log10(LMC1_p), label=club_markers)) + 
+#  geom_point()+geom_label_repel(max.overlaps = Inf)
+
+
+
+
+```
+
+# Control samples
+
+## Correlation of promoter methylation with LMCs{.tabset .tabset-fade .tabset-pills}  
+
+```{r, results='asis'}
+
+
+
+for (lmcs in paste0("LMC", 1:4)){
+g <- volcano_plot_correlation(data = datasets[[1]], x = lmcs, y = paste0(lmcs, "_p"), label = paste0(lmcs, "_label"))
+print(g)
+}
+
+
+
+
+for (marks in colnames(datasets[[1]])[grep("_markers",colnames(datasets[[1]]) )]){
+  
+   cat('\n')
+  
+  cat("### Markers for ",
+      gsub("_markers", "", marks), " cells. ",
+      "\n")
+  
+  for (lmcs in paste0("LMC", 1:4)){
+g <- volcano_plot_correlation(data = datasets[[1]], x = lmcs, y = paste0(lmcs, "_p"), label = marks)
+print(g)
+  }
+  
+
+       cat('\n')
+       
+ plot_data <- datasets[[1]][!is.na(datasets[[1]][,marks]),]
+  plot_data <- plot_data[,grep("control", colnames(plot_data))]
+try(pheatmap(plot_data, show_rownames = F))
+
+  cat('\n')
+  
+       
+}
+saveRDS(datasets[[1]], file=file.path(DATA, "medecom/control_correlation_LMCs.Rmd"))
+
+  cat("### for labels") 
+
+   plot_data <- datasets[[1]][!is.na(datasets[[1]]$LMC1_label),]
+  plot_data <- plot_data[,grep("control", colnames(plot_data))]
+try(pheatmap(plot_data, show_rownames = F))
+   plot_data <- datasets[[1]][!is.na(datasets[[1]]$LMC2_label),]
+  plot_data <- plot_data[,grep("control", colnames(plot_data))]
+try(pheatmap(plot_data, show_rownames = F))
+ plot_data <- datasets[[1]][!is.na(datasets[[1]]$LMC3_label),]
+  plot_data <- plot_data[,grep("control", colnames(plot_data))]
+try(pheatmap(plot_data, show_rownames = F))
+ plot_data <- datasets[[1]][!is.na(datasets[[1]]$LMC4_label),]
+  plot_data <- plot_data[,grep("control", colnames(plot_data))]
+try(pheatmap(plot_data, show_rownames = F))
+
+   cat('\n')
+```
+
+
+## LMC methylation of markers{.tabset .tabset-fade .tabset-pills}  
+
+
+```{r, result='asis', eval=F}
+for (marks in colnames(datasets[[1]])[grep("_markers",colnames(datasets[[1]]) )]){
+  
+   cat('\n')
+  
+  cat("### Markers for ",
+      gsub("_markers", "", marks), " cells. ",
+      "\n")
+
+try(pheatmap(datasets[[1]][!is.na(datasets[[1]][,marks]),grep("gini", colnames(datasets[[1]]))], show_rownames = F, main = marks))
+cat('\n')
+  
+}
+
+```
+
+# All samples 
+
+```{r, eval=F}
+datasets <- datasets_combined[[1]]
+T_all <- MeDeCom:::getT.gini(D=as.matrix(datasets[[1]][,grep("Ms", colnames(datasets[[1]]))]), A = datasets[[2]], lambda = lambda_sel)
+colnames(T_all) <- paste0("gini_LMC", 1:K_sel)
+datasets[[1]] <- cbind(datasets[[1]], T_all)
+
+datasets[[1]] <- datasets[[1]] %>%
+  "[<-"(paste0("LMC", 1:4), value = NA_real_) %>%
+   "[<-"(paste0("LMC", 1:4, "_p"), value = NA_real_)
+
+
+for (LMCs in paste0("LMC", 1:4)){
+  
+est <-lapply(1:nrow(datasets[[1]]), function(x)
+  cor.test(datasets[[2]][LMCs,],  as.numeric(datasets[[1]][x,-c(1:5, which(colnames(datasets[[1]])=="symbol"), grep("LMC", colnames(datasets[[1]])))]), method = "pears"))
+datasets[[1]][,LMCs] <- unlist(lapply(est, function(x) x$estimate))
+datasets[[1]][,paste0(LMCs, "_p")] <- -log10(unlist(lapply(est, function(x) x$p.value)))
+
+}
+
+#fun_filt <- function(val, pval){
+#  ifelse(abs(val)>0.8 & -log10(pval)>5, symbol, NA)
+#}
+
+#datasets[[1]] <- datasets[[1]] %>%
+#  mutate(across(c(Sepal.Length, Sepal.Width), round))
+#    mutate(new_labels=replace(get(label), duplicated(get(label)), NA))
+    
+datasets[[1]] <- datasets[[1]] %>%
+  mutate(LMC1_label=ifelse(abs(LMC1)>0.8 & LMC1_p>5, symbol, NA))
+
+datasets[[1]] <- datasets[[1]] %>%
+  mutate(LMC2_label=ifelse(abs(LMC2)>0.8 & LMC2_p>5, symbol, NA))
+
+datasets[[1]] <- datasets[[1]] %>%
+  mutate(LMC3_label=ifelse(abs(LMC3)>0.8 & LMC3_p>5, symbol, NA))
+
+datasets[[1]] <- datasets[[1]] %>%
+  mutate(LMC4_label=ifelse(abs(LMC4)>0.8 & LMC4_p>5, symbol, NA))
+
+
+vars <- names(marker_lists_short)
+
+
+datasets[[1]] <- datasets[[1]] %>%
+#  mutate(across(colnames(.) %in% vars) ~ case_when(symbol %in% marker_lists_short[[.]]))
+  mutate(AT1_markers=ifelse(symbol %in% marker_lists_short$`AT1 cells`, symbol, NA)) %>% 
+  mutate(AT2_markers=ifelse(symbol %in% marker_lists_short$`AT2 cells`, symbol, NA)) %>%
+  mutate(basal_markers=ifelse(symbol %in% marker_lists_short$`basal cells`, symbol, NA)) %>%
+  mutate(ciliated_markers=ifelse(symbol %in% marker_lists_short$`ciliated cells`, symbol, NA)) %>%
+  mutate(club_markers=ifelse(symbol %in% marker_lists_short$`club cells`, symbol, NA)) %>%
+  mutate(goblet_markers=ifelse(symbol %in% marker_lists_short$`goblet cells`, symbol, NA)) %>%
+  mutate(Krt8_markers=ifelse(symbol %in% marker_lists_short$`Krt8 ADI`, symbol, NA)) %>%
+  mutate(AT1_AT2_markers=ifelse(symbol %in% marker_lists_short$`Mixed AT1_AT2`, symbol, NA)) %>%
+  mutate(club_progenitor_markers=ifelse(symbol %in% marker_lists_short$`Club progenitor`, symbol, NA))
+
+
+#volcano_plot <- ggplot(datasets[[1]], aes(x=LMC1, y=-log10(LMC1_p), label=club_markers)) + 
+#  geom_point()+geom_label_repel(max.overlaps = Inf)
+
+
+
+
+```
+
+## Correlation of promoter methylation with LMCs{.tabset .tabset-fade .tabset-pills}  
+
+```{r, results='asis', eval=F}
+
+
+
+for (lmcs in paste0("LMC", 1:4)){
+g <- volcano_plot_correlation(data = datasets[[1]], x = lmcs, y = paste0(lmcs, "_p"), label = paste0(lmcs, "_label"))
+print(g)
+}
+
+
+
+
+for (marks in colnames(datasets[[1]])[grep("_markers",colnames(datasets[[1]]) )]){
+  
+   cat('\n')
+  
+  cat("### Markers for ",
+      gsub("_markers", "", marks), " cells. ",
+      "\n")
+  
+  for (lmcs in paste0("LMC", 1:4)){
+g <- volcano_plot_correlation(data = datasets[[1]], x = lmcs, y = paste0(lmcs, "_p"), label = marks)
+print(g)
+  }
+  
+
+       cat('\n')
+       
+ plot_data <- datasets[[1]][!is.na(datasets[[1]][,marks]),]
+  plot_data <- plot_data[,grep("Ms", colnames(plot_data))]
+try(pheatmap(plot_data, show_rownames = F))
+
+  cat('\n')
+  
+       
+}
+  cat("### for labels") 
+
+   plot_data <- datasets[[1]][!is.na(datasets[[1]]$LMC1_label),]
+  plot_data <- plot_data[,grep("Ms", colnames(plot_data))]
+try(pheatmap(plot_data, show_rownames = F))
+    plot_data <- datasets[[1]][!is.na(datasets[[1]]$LMC2_label),]
+  plot_data <- plot_data[,grep("Ms", colnames(plot_data))]
+try(pheatmap(plot_data, show_rownames = F))
+ plot_data <- datasets[[1]][!is.na(datasets[[1]]$LMC3_label),]
+  plot_data <- plot_data[,grep("Ms", colnames(plot_data))]
+try(pheatmap(plot_data, show_rownames = F))
+ plot_data <- datasets[[1]][!is.na(datasets[[1]]$LMC4_label),]
+  plot_data <- plot_data[,grep("Ms", colnames(plot_data))]
+try(pheatmap(plot_data, show_rownames = F))
+
+   cat('\n')
+```
+
+
+## LMC methylation of markers{.tabset .tabset-fade .tabset-pills}  
+
+
+```{r, result='asis', , eval=F}
+for (marks in colnames(datasets[[1]])[grep("_markers",colnames(datasets[[1]]) )]){
+  
+   cat('\n')
+  
+  cat("### Markers for ",
+      gsub("_markers", "", marks), " cells. ",
+      "\n")
+
+try(pheatmap(datasets[[1]][!is.na(datasets[[1]][,marks]),grep("gini", colnames(datasets[[1]]))], show_rownames = F, main = marks))
+cat('\n')
+  
+}
+
+```
+
+
+# GSEA like plots 
+
+## Epithelial cell types 
+
+
+```{r}
+
+mypal = pal_igv()(27)
+df <- readRDS(file=file.path(DATA, "medecom/control_correlation_LMCs.Rmd"))
+
+gsea_rank <-  df %>%
+  arrange(desc(abs(LMC1)),desc(LMC1_p)) %>%
+  mutate(symbol=replace(symbol, duplicated(symbol), NA))%>%
+  dplyr::filter(!is.na(symbol)) %>%
+  arrange(LMC1)
+
+
+lmc1_rank <- gsea_rank$LMC1
+names(lmc1_rank) <- gsea_rank$symbol
+
+
+fgseaRes <- fgsea(pathways = marker_lists_short,
+                  stats    = lmc1_rank,
+                 minSize  = 3,
+                  maxSize  = 500, nperm=1000)
+
+gseaplot2(geneSetID = c(4,5,7,8), color = c("green", "red", "blue", "black"),  base_size = 11, rel_heights = c(1.5, 0.5, 1), subplots = 1:3,  pvalue_table = FALSE, ES_geom = "line",
+          title = "LMC1 correlation", ranks = lmc1_rank, geneSet = marker_lists_short, pvaluetable = fgseaRes)
+
+
+
+gsea_rank <-  df %>%
+  arrange(desc(abs(LMC2)),desc(LMC2_p)) %>%
+  mutate(symbol=replace(symbol, duplicated(symbol), NA))%>%
+  dplyr::filter(!is.na(symbol)) %>%
+  arrange(LMC2)
+
+
+lmc2_rank <- gsea_rank$LMC2
+names(lmc2_rank) <- gsea_rank$symbol
+
+fgseaRes <- fgsea(pathways = marker_lists_short,
+                  stats    = lmc2_rank,
+                  minSize  = 3,
+                  maxSize  = 500, nperm=1000)
+
+gseaplot2(geneSetID = c(4,5,7,8), color = c("green", "red", "blue", "black"),  base_size = 11, rel_heights = c(1.5, 0.5, 1), subplots = 1:3,  pvalue_table = FALSE, ES_geom = "line",
+          title = "LMC2 correlation", ranks = lmc2_rank, geneSet = marker_lists_short, pvaluetable = fgseaRes)
+
+
+
+gsea_rank <-  df %>%
+  arrange(desc(abs(LMC3)),desc(LMC3_p)) %>%
+  mutate(symbol=replace(symbol, duplicated(symbol), NA))%>%
+  dplyr::filter(!is.na(symbol)) %>%
+  arrange(LMC3)
+
+
+lmc3_rank <- gsea_rank$LMC3
+names(lmc3_rank) <- gsea_rank$symbol
+
+fgseaRes <- fgsea(pathways = marker_lists_short,
+                  stats    = lmc3_rank,
+                  minSize  = 3,
+                  maxSize  = 500, nperm=1000)
+
+gseaplot2(geneSetID = c(4,5,7,8), color = c("green", "red", "blue", "black"),  base_size = 11, rel_heights = c(1.5, 0.2, 0.5), subplots = 1:3,  pvalue_table = FALSE, ES_geom = "line",
+          title = "LMC3 correlation", ranks = lmc3_rank, geneSet = marker_lists_short, pvaluetable = fgseaRes)
+
+gseaplot2(geneSetID = c(1:10), color = mypal[1:10],  base_size = 11, rel_heights = c(1.5, 0.2, 0.5), subplots = 1:3,  pvalue_table = FALSE, ES_geom = "line",
+          title = "LMC3 correlation", ranks = lmc3_rank, geneSet = marker_lists_short, pvaluetable = fgseaRes)
+gseaplot2(geneSetID = c(11:20), color = mypal[11:20],  base_size = 11, rel_heights = c(1.5, 0.2, 0.5), subplots = 1:3,  pvalue_table = FALSE, ES_geom = "line",
+          title = "LMC3 correlation", ranks = lmc3_rank, geneSet = marker_lists_short, pvaluetable = fgseaRes)
+gseaplot2(geneSetID = c(21:27), color = mypal[21:27],  base_size = 11, rel_heights = c(1.5, 0.2, 0.5), subplots = 1:3,  pvalue_table = FALSE, ES_geom = "line",
+          title = "LMC3 correlation", ranks = lmc3_rank, geneSet = marker_lists_short, pvaluetable = fgseaRes)
+
+```
+
+
+## Mouse cell atlas markers
+
+```{r}
+
+
+selected_markers_MCA <- read.delim("V:/Reka/33_CoO_lung/CoO_Lung_Cancer/data/selected_markers_MCA.txt")
+selected_markers_MCA  <- apply(selected_markers_MCA, 2, function(x) mapIds(org.Mm.eg.db,
+keys = x,
+column = "SYMBOL",
+keytype = "ENSEMBL"))
+selected_markers_MCA_l <- lapply(1:ncol(selected_markers_MCA), function(i) selected_markers_MCA[,i])
+names(selected_markers_MCA_l) <- colnames(selected_markers_MCA)
+
+fgseaRes <- fgsea(pathways = selected_markers_MCA_l,
+                  stats    = lmc1_rank,
+                  minSize  = 3,
+                  maxSize  = 500, nperm=1000)
+
+
+gseaplot2(geneSetID = c(1:5), color = mypal[1:5],  base_size = 11, rel_heights = c(1.5, 0.2, 0.5), subplots = 1:3,  pvalue_table = FALSE, ES_geom = "line",
+title = "LMC1 correlation", ranks = lmc1_rank, geneSet = selected_markers_MCA_l, pvaluetable = fgseaRes)
+
+fgseaRes <- fgsea(pathways = selected_markers_MCA_l,
+                  stats    = lmc2_rank,
+                  minSize  = 3,
+                  maxSize  = 500, nperm=1000)
+
+
+gseaplot2(geneSetID = c(1:5), color = mypal[1:5],  base_size = 11, rel_heights = c(1.5, 0.2, 0.5), subplots = 1:3,  pvalue_table = FALSE, ES_geom = "line",
+title = "LMC2 correlation", ranks = lmc2_rank, geneSet = selected_markers_MCA_l, pvaluetable = fgseaRes)
+
+
+fgseaRes <- fgsea(pathways = selected_markers_MCA_l,
+                  stats    = lmc3_rank,
+                  minSize  = 3,
+                  maxSize  = 500, nperm=1000)
+
+
+gseaplot2(geneSetID = c(1:5), color = mypal[1:5],  base_size = 11, rel_heights = c(1.5, 0.2, 0.5), subplots = 1:3,  pvalue_table = FALSE, ES_geom = "line",
+title = "LMC3 correlation", ranks = lmc3_rank, geneSet = selected_markers_MCA_l, pvaluetable = fgseaRes)
+
+
+```
+
+
+```{r}
+
+
+
+
+lung_cell_atlas_other_markers <- read.delim("V:/Reka/33_CoO_lung/CoO_Lung_Cancer/data/lung_cell_atlas_other_markers.txt")
+new_list <- lapply(1:ncol(lung_cell_atlas_other_markers), function(x)  CapStr(tolower(lung_cell_atlas_other_markers[,x])))
+new_list <- lapply(new_list, function(x) x[1:28])
+new_list <- lapply(new_list, function(x) x[x %in% gsea_rank$symbol])
+names(new_list) <- colnames(lung_cell_atlas_other_markers)
+
+fgseaRes <- fgsea(pathways = new_list,
+                  stats    = lmc3_rank,
+                  minSize  = 3,
+                  maxSize  = 500, nperm=1000)
+
+gseaplot2(geneSetID = c(1:13), color = mypal[1:13],  base_size = 11, rel_heights = c(1.5, 0.2, 0.5), subplots = 1:3,  pvalue_table = FALSE, ES_geom = "line",
+title = "LMC3 correlation", ranks = lmc3_rank, geneSet = new_list, pvaluetable = fgseaRes)
+
+
+gseaplot2(geneSetID = c(3:5), color = mypal[1:3],  base_size = 11, rel_heights = c(1.5, 0.2, 0.5), subplots = 1:3,  pvalue_table = FALSE, ES_geom = "line",
+                     title = "LMC3 correlation", ranks = lmc3_rank, geneSet = new_list, pvaluetable = fgseaRes)
+
+```
+
+
+
+```{r}
+
+
+#Heatmap all pathways combined
+
+marker_lists_short <- marker_lists_short[-19]
+all_pw <- c(selected_markers_MCA_l, new_list)
+i <- 1
+for (lmcs in list(lmc1_rank, lmc2_rank, lmc3_rank, lmc4_rank)){
+
+gsdata2 <- do.call(rbind, lapply(1:length(all_pw), function(id) gsInfo2(geneSetID=id, geneset = all_pw, res = lmcs)))
+
+fgseaRes <- fgsea(pathways = all_pw,
+                  stats    = lmcs,
+                  minSize  = 3,
+                  maxSize  = 500, nperm=1000)
+
+gsdata3 <- gsdata2 %>% 
+  inner_join(fgseaRes[,c("pathway", "pval")], by= c("Description"="pathway")) %>% 
+  mutate(significant=ifelse(pval<0.05, " *", NA)) %>%
+  mutate(Description=factor(Description, levels = fgseaRes$pathway[order(fgseaRes$ES, decreasing = T)]))
+  
+p <- ggplot(gsdata3)+geom_tile(aes(Description, factor(x), fill=runningScore)) +scale_fill_gradient2(low="darkred", mid="white", high="darkblue")+theme(axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank(), axis.text.y=element_text())+ coord_flip()
+print(p)
+ggsave(p, filename=paste0("../Figures/methylation/heatmaps_lmcs_", i,  ".pdf"), height = 4, width = 5)
+
+i <- i+1
+}
+
+```
+
+

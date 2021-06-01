@@ -1,0 +1,149 @@
+---
+title: "Prepare data for homer"
+author: "Reka Toth"
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+workflowr:
+  suppress_report: TRUE
+---
+
+
+```{r libraries, echo=TRUE, message=FALSE, warning=FALSE}
+
+library(methrix)
+library(bsseq)
+library(HDF5Array)
+library(plotly)
+library(autoplotly)
+library(ComplexHeatmap)
+library(methrix)
+library(DSS)
+library(annotatr)
+library(ggplot2)
+library(rtracklayer)
+library(limma)
+library(knitr)
+library(kableExtra)
+library(dplyr)
+library(ChIPseeker)
+library(ggsci)
+library(regioneR)
+
+```
+
+
+# Read in methrix dataset 
+```{r open_methrix, echo=TRUE, message=TRUE, warning=FALSE}
+
+###########libraries and functions#############
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH ="V:/"} else {
+    PATH ="/C010-projects/"}
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH_Y="N:/"} else {
+    PATH_Y="/C010-datasets/"}
+
+DATA = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/data/norfp/")
+DATA_meth = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/data/")
+CODE = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/code/")
+RESULT = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/output/")
+DOCS = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/docs/")
+CALLS = paste0(PATH_Y, "External/2018-10-Sotillo/data/methylDackel/")
+
+################################################
+
+
+res <- readRDS(paste0(DATA_meth, "no_snpsXY_methrix.RDS"))
+
+
+##remove MsCCSP_control01, because of bad QC values
+#res <- methrix::subset_methrix(res, samples = rownames(res@colData)[-which(res@colData$full_name=="MsCCSP_control01")])
+
+Cellpaper <- c("#313695","#4575b4", "#74add1", "#abd9e9","#e0f3f8","#ffffbf","#fee090","#fdae61","#f46d43","#d73027","#a50026")
+
+mypal = pal_nejm()(4)
+ann_colors = list(
+    sample_name = c(control = mypal[1], tumor = mypal[2]),
+    cell_type = c(MsCCSP = mypal[3], MsSPC = mypal[4])
+)
+
+
+
+source(file.path(CODE, 'plot_pca_npg.R'))
+source(file.path(CODE, "region_annotation_function.R"))
+
+
+```
+
+```{r prepare DMRs,  dev=c('png', 'pdf')}
+
+DMRs <- readRDS(file.path(DATA, "DMRs_new_groups.RDS"))
+DMLs <- readRDS(file.path(DATA, "DMLs_new_groups.RDS"))
+comparisons_all <- names(DMRs)
+
+
+labels <- readRDS(file.path(DATA_meth, "labels.RDS"))
+labels <- rbind(labels, data.frame(cell="", first="MsCCCP_tumor", sec="MsSPC_tumor", comparisons="CCSP_tumor"))
+rownames(labels) <- labels$comparisons
+labels <- labels[comparisons_all,]
+
+
+#comparisons_selected <- c("MsCCSP_tumor_control_comparison", 
+#                                   "MsCCSP_MsSPC_control_comparison",
+#                                   "MsSPC_tumor_control_comparison",
+#                                   "MsCCSP_MsSPC_tumor_comparison")
+
+#labels <- labels[labels$comparisons %in% comparisons_all,]
+
+
+gain <- list()
+loss <- list()
+
+
+for (comp in labels$comparisons){
+
+  gain[[comp]] <- DMRs[[comp]][DMRs[[comp]]$diff.Methy<0,]
+  gain[[comp]]  <- makeGRangesFromDataFrame(gain[[comp]] , keep.extra.columns = T)
+  genome(gain[[comp]] ) <- rep("mm10", length(genome(gain[[comp]] )))
+
+
+  loss[[comp]] <-  DMRs[[comp]][DMRs[[comp]]$diff.Methy>0,]
+  loss[[comp]] <- makeGRangesFromDataFrame(loss[[comp]], keep.extra.columns = T)
+  genome(loss[[comp]]) <- rep("mm10", length(genome(loss[[comp]])))
+  
+}
+  
+```
+
+
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='asis'}
+
+dir.create(paste0(DATA, "/beds_new_groups/"))
+
+for (comp in labels$comparisons) {
+  cat('\n')
+  
+  cat("### Comparisons",
+      paste0(labels[labels$comparisons == comp, 1], " ",
+             labels[labels$comparisons == comp, 2], " vs. ",
+             labels[labels$comparisons == comp, 3]),
+      "\n")
+ 
+  for (dataset in list(gain[[comp]], loss[[comp]])) {
+   direction <- ifelse(all(dataset$diff.Methy<0), "gain", "loss")
+  #  names(enhancers) <- seq_along(enhancers)
+    strand(dataset) <- "+"
+    dataset <- as.data.frame(dataset)
+    write.table(dataset[,c(1:3,5)], file=file.path(DATA, "/beds_new_groups/", paste0(comp, "_", direction, ".bed")), row.names=T, col.names=F, sep="\t", quote=F)
+    #export.bed(enhancers, con=file.path(DATA, "enhancer_beds", paste0(comp, "_", direction, ".bed")), )
+  }
+      
+}
+   
+```
+
+

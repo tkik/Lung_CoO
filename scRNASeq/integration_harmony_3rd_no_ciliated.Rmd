@@ -1,0 +1,452 @@
+---
+title: "Batch effect correction with Harmony"
+author: "Reka_Toth"
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output:
+ # html_notebook: default
+  workflowr::wflow_html:
+    toc: false
+    code_folding: "hide"
+#output: workflowr::wflow_html:
+editor_options:
+  chunk_output_type: console
+---
+
+```{r include=FALSE}
+
+knitr::opts_chunk$set(message=FALSE, warning=FALSE)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(patchwork)
+library(harmony)
+library(cerebroApp)
+library(biomaRt)
+library(future)
+
+###########libraries and functions#############
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH ="V:/"} else {
+    PATH ="/C010-projects/"}
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH_Y="N:/"} else {
+    PATH_Y="/C010-datasets/"}
+PATH_ICGC <- "/icgc/"
+
+ plan("multiprocess", workers = 2)
+options(future.globals.maxSize= 5000*1024^2)
+
+DATA = paste0(PATH, "Reka/33_CoO_lung/scRNASeq/data")
+DATA_datasets = paste0(PATH_Y, "External/Sotillo_mouse_lung_cell/scRNASeq_CoO_lung/scrnaseq_analysis/")
+
+RESULT = "./output/"
+CODE = "./code/"
+CALLS = paste0(PATH_Y, "External/Sotillo_mouse_lung_cell/scRNASeq_CoO_lung/cellranger_output_30_07/")
+CALLS2 = paste0(PATH_Y, "External/Sotillo_mouse_lung_cell/scRNASeq_CoO_lung/cellranger_output_22_11/")
+
+# Basic function to convert human to mouse gene names
+convertHumanGeneList <- function(x){
+require("biomaRt")
+human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+genesV2 = getLDS(attributes = c("hgnc_symbol"), filters = "hgnc_symbol", values = x , mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
+humanx <- unique(genesV2[, 2])
+# Print the first 6 genes found to the screen
+return(humanx)
+}
+
+```
+
+
+# Reading in the individual datasets
+
+## control01_tam
+
+```{r control01_tam, message=F, warning=F, eval=F}
+sc.data <- Read10X(data.dir = file.path(CALLS, "control01_tam/filtered_feature_bc_matrix/"))
+control01_tam <- CreateSeuratObject(counts = sc.data, project = "control01_tam", min.cells = 3, min.features = 200)
+control01_tam[["percent.mt"]] <- PercentageFeatureSet(control01_tam, pattern = "^mt")
+
+control01_tam <- subset(control01_tam, subset = nFeature_RNA > 1000 & nFeature_RNA < 6000 & percent.mt < 10)
+control01_tam <- NormalizeData(control01_tam, normalization.method = "LogNormalize", scale.factor = 10000)
+control01_tam <- FindVariableFeatures(control01_tam, selection.method = "vst", nfeatures = 2000)
+
+#colnames(control01_tam) <- paste0("control01_tam_", colnames(control01_tam))
+
+```
+
+## eav1_4wks_1
+
+```{r message=FALSE, warning=FALSE, eval=F}
+sc.data <- Read10X(data.dir = file.path(CALLS, "eavl-4wk/filtered_feature_bc_matrix/"))
+eav1_4wks <- CreateSeuratObject(counts = sc.data, project = "eav1_4wks_1", min.cells = 3, min.features = 200)
+eav1_4wks[["percent.mt"]] <- PercentageFeatureSet(eav1_4wks, pattern = "^mt")
+
+
+eav1_4wks <- subset(eav1_4wks, subset = nFeature_RNA > 1500 & nFeature_RNA < 6000 & percent.mt < 10)
+eav1_4wks <- NormalizeData(eav1_4wks, normalization.method = "LogNormalize", scale.factor = 10000)
+eav1_4wks <- FindVariableFeatures(eav1_4wks, selection.method = "vst", nfeatures = 2000)
+#colnames(eav1_4wks) <- paste0("eav1_4wks", colnames(eav1_4wks))
+
+```
+
+## eav1_endpoint
+
+
+```{r eval=F}
+sc.data <- Read10X(data.dir = file.path(CALLS, "eavl-endpoint/filtered_feature_bc_matrix/"))
+eav1_endpoint <- CreateSeuratObject(counts = sc.data, project = "eav1_endpoint", min.cells = 3, min.features = 200)
+eav1_endpoint[["percent.mt"]] <- PercentageFeatureSet(eav1_endpoint, pattern = "^mt")
+eav1_endpoint <- subset(eav1_endpoint, subset = nFeature_RNA > 1000 & nFeature_RNA < 6000 & percent.mt < 10)
+eav1_endpoint <- NormalizeData(eav1_endpoint, normalization.method = "LogNormalize", scale.factor = 10000)
+eav1_endpoint <- FindVariableFeatures(eav1_endpoint, selection.method = "vst", nfeatures = 2000)
+#colnames(eav1_endpoint) <- paste0("eav1_endpoint", colnames(eav1_endpoint))
+
+```
+
+## control01_cas9
+
+```{r, eval=F}
+sc.data <- Read10X(data.dir = file.path(CALLS, "control01-cas9/filtered_feature_bc_matrix/"))
+control01_cas9 <- CreateSeuratObject(counts = sc.data, project = "control01_cas9", min.cells = 3, min.features = 200)
+control01_cas9[["percent.mt"]] <- PercentageFeatureSet(control01_cas9, pattern = "^mt")
+control01_cas9 <- subset(control01_cas9, subset = nFeature_RNA > 1000 & nFeature_RNA < 6000 & percent.mt < 10)
+control01_cas9 <- NormalizeData(control01_cas9, normalization.method = "LogNormalize", scale.factor = 10000)
+control01_cas9 <- FindVariableFeatures(control01_cas9, selection.method = "vst", nfeatures = 2000)
+#colnames(control01_cas9) <- paste0("control01_cas9", colnames(control01_cas9))
+
+```
+
+## eav1_2wks_1
+
+```{r, eval=F}
+sc.data <- Read10X(data.dir = file.path(CALLS, "eavl-2wk/filtered_feature_bc_matrix/"))
+eav1_2wks <- CreateSeuratObject(counts = sc.data, project = "eav1_2wks_1", min.cells = 3, min.features = 200)
+eav1_2wks[["percent.mt"]] <- PercentageFeatureSet(eav1_2wks, pattern = "^mt")
+eav1_2wks <- subset(eav1_2wks, subset = nFeature_RNA > 1000 & nFeature_RNA < 6000 & percent.mt < 10)
+eav1_2wks <- NormalizeData(eav1_2wks, normalization.method = "LogNormalize", scale.factor = 10000)
+eav1_2wks <- FindVariableFeatures(eav1_2wks, selection.method = "vst", nfeatures = 2000)
+#colnames(eav1_2wks) <- paste0("eav1_2wks", colnames(eav1_2wks))
+
+```
+
+## eav1_2wks_2
+
+```{r eval=F}
+sc.data <- Read10X(data.dir = file.path(CALLS2, "2w-v1/filtered_feature_bc_matrix/"))
+eav2_2wks <- CreateSeuratObject(counts = sc.data, project = "eav1_2wks_2", min.cells = 3, min.features = 200)
+eav2_2wks[["percent.mt"]] <- PercentageFeatureSet(eav2_2wks, pattern = "^mt")
+eav2_2wks <- subset(eav2_2wks, subset = nFeature_RNA > 2000 & nFeature_RNA < 6000 & percent.mt < 10)
+eav2_2wks <- NormalizeData(eav2_2wks, normalization.method = "LogNormalize", scale.factor = 10000)
+eav2_2wks <- FindVariableFeatures(eav2_2wks, selection.method = "vst", nfeatures = 2000)
+#colnames(eav1_2wks) <- paste0("eav1_2wks", colnames(eav1_2wks))
+
+```
+
+
+## eav1_4wks_2
+
+```{r eval=F}
+sc.data <- Read10X(data.dir = file.path(CALLS2, "4w-v1/filtered_feature_bc_matrix/"))
+eav2_4wks <- CreateSeuratObject(counts = sc.data, project = "eav1_4wks_2", min.cells = 3, min.features = 200)
+eav2_4wks[["percent.mt"]] <- PercentageFeatureSet(eav2_4wks, pattern = "^mt")
+eav2_4wks <- subset(eav2_4wks, subset = nFeature_RNA > 2000 & nFeature_RNA < 6000 & percent.mt < 10)
+eav2_4wks <- NormalizeData(eav2_4wks, normalization.method = "LogNormalize", scale.factor = 10000)
+eav2_4wks <- FindVariableFeatures(eav2_4wks, selection.method = "vst", nfeatures = 2000)
+#colnames(eav1_2wks) <- paste0("eav1_2wks", colnames(eav1_2wks))
+
+```
+
+## end_SPC
+
+```{r eval=F}
+sc.data <- Read10X(data.dir = file.path(CALLS2, "end_SPC/filtered_feature_bc_matrix/"))
+end_SPC <- CreateSeuratObject(counts = sc.data, project = "end_SPC", min.cells = 3, min.features = 200)
+end_SPC[["percent.mt"]] <- PercentageFeatureSet(end_SPC, pattern = "^mt")
+end_SPC <- subset(end_SPC, subset = nFeature_RNA > 2000 & nFeature_RNA < 6000 & percent.mt < 10)
+end_SPC <- NormalizeData(end_SPC, normalization.method = "LogNormalize", scale.factor = 10000)
+end_SPC <- FindVariableFeatures(end_SPC, selection.method = "vst", nfeatures = 2000)
+#colnames(eav1_2wks) <- paste0("eav1_2wks", colnames(eav1_2wks))
+
+```
+
+## Simple merge of the datasets 
+
+```{r eval=F}
+#sc.list <- list("control01_cas9"=control01_cas9, "control01_tam"=control01_tam, "eav1_2wks"=eav1_2wks, "eav2_2wks"=eav2_2wks,
+#                "eav1_4wks"=eav1_4wks, "eav2_4wks"=eav2_4wks, "eav1_endpoint"=eav1_endpoint, "end_SPC"=end_SPC)
+#for (i in 1:length(sc.list)){
+#sc.list[[i]] <- SCTransform(sc.list[[i]], verbose = FALSE, vars.to.regress = "percent.mt")}
+#gcdata <- merge(sc.list[["control01_cas9"]], y=c(sc.list[["control01_tam"]], sc.list[["eav1_2wks"]], sc.list[["eav2_2wks"]], 
+#                                                sc.list[["eav1_4wks"]], sc.list[["eav2_4wks"]], sc.list[["eav1_endpoint"]]), project = "lung_coo")
+gcdata <- merge(control01_cas9, y=c(control01_tam, eav1_2wks, eav2_2wks, 
+                                                eav1_4wks, eav2_4wks, eav1_endpoint), project = "lung_coo")
+
+
+rm(list = c("control01_cas9", "control01_tam", "eav1_4wks", "eav2_4wks", "eav2_2wks", "eav1_2wks", "eav1_endpoint", "end_SPC"))
+gc()
+
+#saveRDS(gcdata, file = paste0(DATA_datasets, "gdc_unscaled.RDS"))
+
+```
+
+```{r eval=F}
+
+#gcdata <- readRDS(file = paste0(DATA, "gdc_uncorrected.RDS"))
+
+Macosko_cell_cycle_genes <- read.delim(file.path(DATA, "Macosko_cell_cycle_genes.txt"))
+#m.s.genes <- convertHumanGeneList(cc.genes.updated.2020$s.genes)
+#m.g2m.genes <- convertHumanGeneList(cc.genes.updated.20190019$g2m.genes)
+
+#gcdata <- CellCycleScoring(gcdata, s.features = m.s.genes, g2m.features = m.g2m.genes, set.ident = F)
+
+#m.s.genes <- convertHumanGeneList(Macosko_cell_cycle_genes$S)
+#m.g2m.genes <- convertHumanGeneList(Macosko_cell_cycle_genes$G2.M)
+
+m.s.genes <- readRDS( file=paste0(DATA, "/cellcyclegenes.RDS"))[[1]]
+m.g2m.genes <- readRDS( file=paste0(DATA, "/cellcyclegenes.RDS"))[[2]]
+
+```
+
+
+
+## Data without batch effect correction
+
+```{r message=FALSE, warning=FALSE, eval=F}
+
+
+gcdata <- readRDS( file = paste0(DATA_datasets, "gdc_unscaled.RDS"))
+all.genes <- rownames(gcdata)
+
+gcdata <- FindVariableFeatures(gcdata, selection.method = "vst", nfeatures = 4000)
+gcdata <- CellCycleScoring(gcdata, s.features = m.s.genes, g2m.features = m.g2m.genes, set.ident = F)
+gcdata[["percent.ribo"]] <- PercentageFeatureSet(gcdata, pattern = "^Rb")
+#gcdata[["percent.mito"]] <- PercentageFeatureSet(gcdata, pattern = "^mt")
+
+gcdata <- ScaleData(gcdata, verbose = FALSE, features = all.genes)
+#gcdata <- RunPCA(gcdata, npcs = 30, verbose = FALSE, assay="SCT")
+
+saveRDS(gcdata, file = paste0(DATA_datasets, "gdc_uncorrected.RDS"))
+
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+gcdata <- readRDS( file = paste0(DATA_datasets, "gdc_uncorrected.RDS"))
+gcdata <- RunPCA(gcdata, npcs = 30, verbose = FALSE)
+gcdata <- RunUMAP(gcdata, reduction = "pca", dims = 1:30)
+
+p1 <- DimPlot(gcdata, reduction = "umap", group.by = "orig.ident")
+p1 
+```
+
+
+# Harmony
+
+```{r message=FALSE, warning=FALSE}
+
+#set.seed(4552)
+#set.seed(453)
+set.seed(897)
+harmony_data <- gcdata %>% 
+   RunHarmony("orig.ident", plot_convergence = TRUE)
+  #  RunHarmony("orig.ident", plot_convergence = TRUE, assay.use="SCT")
+#harmony_data <- readRDS( file=file.path(DATA, "harmony_integrated_2nd.RDS"))
+all.genes <- rownames(harmony_data)
+harmony_data <- harmony_data %>% 
+    RunUMAP(reduction = "harmony", dims = 1:30) %>% 
+    FindNeighbors(reduction = "harmony", dims = 1:30) %>% 
+   # FindClusters(resolution = 0.5) %>% 
+      FindClusters(resolution = 0.5) %>% 
+    identity()
+```
+
+
+## Sample exclusion
+
+Select samples that are in cluster 11 or 13, most likely ciliated cells. 
+```{r}
+## exclusion 
+exclude_samples <- harmony_data$seurat_clusters %in% c("11", "13")
+
+```
+
+## Exclude samples and re-run harmony
+
+```{r}
+
+gcdata <- readRDS( file = paste0(DATA_datasets, "gdc_uncorrected.RDS"))
+gcdata <- gcdata[,!exclude_samples]
+
+gcdata <- RunPCA(gcdata, npcs = 30, verbose = FALSE)
+gcdata <- RunUMAP(gcdata, reduction = "pca", dims = 1:30)
+
+p1 <- DimPlot(gcdata, reduction = "umap", group.by = "orig.ident")
+p1 
+
+set.seed(897)
+harmony_data <- gcdata %>% 
+   RunHarmony("orig.ident", plot_convergence = TRUE)
+  #  RunHarmony("orig.ident", plot_convergence = TRUE, assay.use="SCT")
+#harmony_data <- readRDS( file=file.path(DATA, "harmony_integrated_2nd.RDS"))
+rm(gcdata)
+gc()
+
+
+```
+
+
+```{r}
+## Plots to decide on how many clusters we have 
+
+VizDimLoadings(harmony_data, dims = 1:2, reduction = "pca")
+DimPlot(harmony_data, reduction = "pca")
+
+DimHeatmap(harmony_data, dims = 1:3, cells = 500, balanced = TRUE)
+DimHeatmap(harmony_data, dims = 4:6, cells = 500, balanced = TRUE)
+DimHeatmap(harmony_data, dims = 7:9, cells = 500, balanced = TRUE)
+DimHeatmap(harmony_data, dims = 10:12, cells = 500, balanced = TRUE)
+DimHeatmap(harmony_data, dims = 13:15, cells = 500, balanced = TRUE)
+#harmony_data <- JackStraw(harmony_data, num.replicate = 100, reduction = "harmony")
+#harmony_data <- ScoreJackStraw(harmony_data, dims = 1:25)
+#JackStrawPlot(harmony_data, dims = 1:20)
+ElbowPlot(harmony_data)
+```
+
+## Finding clusters 
+
+```{r, results='asis'}
+
+all.genes <- rownames(harmony_data)
+harmony_data <- harmony_data %>% 
+    RunUMAP(reduction = "harmony", dims = 1:30) %>% 
+    FindNeighbors(reduction = "harmony", dims = 1:30) %>% 
+   # FindClusters(resolution = 0.5) %>% 
+    FindClusters(resolution = 0.6) %>% 
+    identity()
+
+
+#harmony_data[["percent.mt"]] <- PercentageFeatureSet(harmony_data, pattern = "^mt")
+
+DimPlot(harmony_data, reduction = "umap", label = TRUE, pt.size = .1)
+DimPlot(harmony_data, reduction = "umap", label = TRUE, pt.size = .1, group.by = "orig.ident")
+
+### Mitochondrial RNA
+FeaturePlot(harmony_data, reduction = "umap", features = "percent.mt")
+
+
+
+DimPlot(harmony_data, reduction = "umap", label = F, pt.size = .1, group.by = "Phase")
+
+#for (i in seq(from = 1, to = length(m.g2m.genes), by = 3)){
+#    print(RidgePlot(harmony_data, features = m.g2m.genes[i:(i+2)], ncol=3))
+#}
+#for (i in seq(from = 1, to = length(m.s.genes), by = 3)){
+#    print(RidgePlot(harmony_data, features = m.s.genes[i:(i+2)], ncol=3))
+#}
+
+#harmony_data.markers <- FindAllMarkers(harmony_data, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, slot = )
+```
+
+## Identification of cluster specific markers
+### Top 5 genes per cluster 
+
+```{r}
+harmony_data.markers <- FindAllMarkers(harmony_data, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+top_markers <- harmony_data.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_logFC)
+DT::datatable(top_markers)
+DT::datatable(harmony_data.markers)
+```
+
+
+
+## Distribution of marker genes by cluster
+
+```{r message=FALSE, warning=FALSE}
+
+
+for (i in seq(from = 1, to = length(top_markers$gene), by = 3)){
+  print(RidgePlot(harmony_data, features = top_markers$gene[i:(i+2)], ncol=3))
+}
+
+#RidgePlot(lung.integrated, features = top_markers$gene , ncol = 3)
+```
+
+## Heatmap of the gene expression of the top 10 markers by cluster
+
+```{r}
+
+top10 <- harmony_data.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+DoHeatmap(harmony_data, features = top10$gene) + NoLegend() + RotatedAxis()
+
+```
+
+# Plot genes 
+
+```{r}
+
+par(mfrow = c(2, 3))
+FeaturePlot(harmony_data, reduction = "umap", features = c("Sftpc", "Foxj1", "Hopx", "Bpifa1", "H2-K1", "Scgb1a1"))
+
+```
+
+
+# Marker genes 
+
+## Cell Stem Cell paper
+
+```{r}
+
+m1 <- c("Sftpc", "Foxj1", "Scgb1a1", "Scgb3a2", "Cd74", "Cd14", "H2-K1", "AW112010")
+
+m2 <- c("Cdkn1c", "Cdkn1a", "Trp53", "Rnm1", "Pcna", "Cdc20", "Cks1b", "Smc4", "Tmpo", "Cdk1", "Slbp", "Tubb4b", "Cks2", "Hmgb2")
+
+DotPlot(harmony_data, features = m1) + RotatedAxis()
+DotPlot(harmony_data, features = m2) + RotatedAxis()
+
+
+```
+
+## Export data 
+```{r, eval=T}
+saveRDS(harmony_data, file=file.path(DATA, "harmony_integrated_3rd_no_ciliated.RDS"))
+saveRDS(harmony_data.markers, file=file.path(DATA, "harmony_integrated.markers_3rd_no_ciliated.RDS"))
+
+#harmony_data <- addPercentMtRibo(harmony_data, organism = "mm", gene_nomenclature = "name") %>%
+#              getMostExpressedGenes(column_cluster = "seurat_clusters", column_sample = NULL) %>%
+#               getMarkerGenes(organism = "mm", column_cluster = "seurat_clusters", column_sample = "orig.ident") %>%
+#               getEnrichedPathways(lcolumn_cluster = "seurat_clusters", column_sample = "orig.ident") %>% 
+#              performGeneSetEnrichmentAnalysis(GMT_file = file.path(DATA, 'msigdb.v7.1.symbols.gmt'), column_cluster = "seurat_clusters", column_sample = "orig.ident", min.sz = 2 )
+
+#saveRDS(harmony_data, file=file.path(DATA, "harmony_integrated.RDS"))
+#saveRDS(harmony_data.markers, file=file.path(DATA, "harmony_integrated.markers.RDS"))
+
+#exportFromSeurat(harmony_data, file = file.path(DATA, "cerebro_harmony.crb"), experiment_name = "Lung_coo", organism = "mm", column_sample = "orig.ident", column_cluster = "seurat_clusters", column_nGene = "nFeature_RNA", column_nUMI = "nCount_RNA", add_all_meta_data = T)
+
+
+```
+
+```{r, eval=T}
+harmony_data <- addPercentMtRibo(harmony_data, organism = "mm", gene_nomenclature = "name") %>%
+              getMostExpressedGenes(column_sample = "orig.ident", column_cluster = "seurat_clusters") %>%
+               getMarkerGenes(organism = "mm", column_cluster = "seurat_clusters", column_sample = "orig.ident") %>%
+               getEnrichedPathways(column_sample = "orig.ident", column_cluster = "seurat_clusters") %>% 
+              performGeneSetEnrichmentAnalysis(GMT_file = file.path(DATA, 'msigdb.v7.1.symbols.gmt'), column_cluster = "seurat_clusters", column_sample = "orig.ident", min.sz = 2 )
+
+
+
+#saveRDS(harmony_data, file=file.path(DATA, "harmony_integrated_3rd.RDS"))
+#saveRDS(harmony_data.markers, file=file.path(DATA, "harmony_integrated.markers_3rd.RDS"))
+
+#exportFromSeurat(harmony_data, file = file.path(DATA, "cerebro_harmony_3rd.crb"), experiment_name = "Lung_coo", organism = "mm", column_sample = "orig.ident", column_cluster = "seurat_clusters", column_nGene = "nFeature_RNA", column_nUMI = "nCount_RNA", add_all_meta_data = T)
+
+```
+

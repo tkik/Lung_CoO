@@ -1,0 +1,68 @@
+#cellranger
+
+mapfile -t fastq < <(find /icgc/dkfzlsdf/project/B220/lung_cell_methylome_mouse/sequencing/10x_scRNA_sequencing/view-by-pid/B220_CCSP | grep -E 'R1.fastq.gz$')
+
+
+iteration=${#fastq[@]}
+iteration=$(( iteration - 1))
+for file in "${fastq[@]}";
+do
+s=$file
+s="${s#/icgc/dkfzlsdf/project/B220/lung_cell_methylome_mouse/sequencing/10x_scRNA_sequencing/view-by-pid/B220_CCSP/}"
+sample_name="${s%/paired*}"
+mapfile -t samples < <(find /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/fastqs | grep -E $sample_name'_S1_L00._R1_001.fastq.gz')
+lane=${#samples[@]}
+lane=$(( lane + 1 ))
+s_R2=${file/_R1/_R2}
+cp $file '/icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/fastqs/'$sample_name'_S1_L00'$lane'_R1_001.fastq.gz'
+cp $s_R2 '/icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/fastqs/'$sample_name'_S1_L00'$lane'_R2_001.fastq.gz'
+done
+
+
+
+#read="${s%%.*}"      
+#read="${read##*_}"
+
+
+mkdir /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/run
+
+cd /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/run
+
+sample=eav1-endpoint
+bsub -q verylong -W 72:00 -R "rusage[mem=100G]" cellranger count --id=$sample  --fastqs /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/fastqs --sample $sample --transcriptome /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/reference/mm10/refdata-gex-mm10-2020-A --localcores=16 --localmem=100
+
+sample=control01-cas9
+bsub -q verylong -W 72:00 -R "rusage[mem=100G]" cellranger count --id=$sample  --fastqs /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/fastqs --sample $sample --transcriptome /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/reference/mm10/refdata-gex-mm10-2020-A --localcores=16 --localmem=100
+
+sample=eav1-2wk
+bsub -q verylong -W 72:00 -R "rusage[mem=100G]" cellranger count --id=$sample  --fastqs /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/fastqs --sample $sample --transcriptome /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/reference/mm10/refdata-gex-mm10-2020-A --localcores=16 --localmem=100
+
+sample=eav1-4wk
+bsub -q verylong -W 72:00 -R "rusage[mem=100G]" cellranger count --id=$sample  --fastqs /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/fastqs --sample $sample --transcriptome /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/reference/mm10/refdata-gex-mm10-2020-A --localcores=16 --localmem=100
+
+sample=eav1-4wk
+bsub -q verylong -W 72:00 -R "rusage[mem=100G]" cellranger count --id=$sample  --fastqs /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/fastqs --sample $sample --transcriptome /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/reference/mm10/refdata-gex-mm10-2020-A --localcores=16 --localmem=100
+
+
+##testing copying
+
+mapfile -t fastq < <(find /icgc/dkfzlsdf/project/B220/lung_cell_methylome_mouse/sequencing/10x_scRNA_sequencing/view-by-pid/B220_CCSP | grep -E 'R1.fastq.gz$')
+
+
+iteration=${#fastq[@]}
+iteration=$(( iteration - 1))
+for file in "${fastq[@]}";
+do
+s=$file
+s="${s#/icgc/dkfzlsdf/project/B220/lung_cell_methylome_mouse/sequencing/10x_scRNA_sequencing/view-by-pid/B220_CCSP/}"
+sample_name="${s%/paired*}"
+mapfile -t samples < <(find /icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/test_copy | grep -E $sample_name'_S1_L00._R1_001.txt')
+lane=${#samples[@]}
+lane=$(( lane + 1 ))
+s_R2=${file/_R1/_R2}
+
+echo $file > '/icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/test_copy/'$sample_name'_S1_L00'$lane'_R1_001.txt'
+echo $s_R2 > '/icgc/dkfzlsdf/analysis/C010/scRNA_lung_mouse/cellranger/test_copy/'$sample_name'_S1_L00'$lane'_R2_001.txt'
+done
+
+mapfile -t fastq < <(find /icgc/dkfzlsdf/project/B220/lung_cell_methylome_mouse/sequencing/10x_scRNA_sequencing/view-by-pid/B220_CCSP | grep -E 'R1.fastq.gz$ | grep -E endpoint')

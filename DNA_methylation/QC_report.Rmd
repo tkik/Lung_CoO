@@ -1,0 +1,234 @@
+---
+title: "QC measurements, lung CoO project"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r read_in_qc, message=FALSE, warning=FALSE, include=FALSE}
+
+#library(RnBeads.mm10)
+library(RnBeads)
+library(data.table)
+library(ggplot2)
+library(plotly)
+
+###########libraries and functions#############
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH ="V:/"} else {
+    PATH ="/C010-projects/"}
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH_Y="N:/"} else {
+    PATH_Y="/C010-datasets/"}
+
+DATA = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/data/")
+RESULT = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/output/")
+CALLS = paste0(PATH_Y, "External/2018-10-Sotillo/data/methylDackel/")
+SNPS = paste0(PATH_Y, "External/2018-10-Sotillo/data/snps/")
+
+
+```
+
+```{r eval=F, include=FALSE}
+
+ annotation <- read.delim(file=file.path(DATA, "annotation_table_TAGWGBS_16_2_2021.txt"), 
+                          stringsAsFactors = F, row.names=1)
+
+samples <- paste0(annotation$directory, "_", annotation$sample)
+chromosomes <- paste0("chr", c(1:19, "X", "Y", "M"))
+#cpg_anno <- rnb.get.annotation(type="CpG", assembly="mm10")
+
+#no_of_cpgs <- sum(unlist(lapply(cpg_anno, length)))/2
+  
+read_file_regions <- function(file, keyword="", lines=3){
+    #browser()
+    con <- file(file)
+    read_in_lines <- readLines(con=con)  
+    read_in_data <- (which(read_in_lines==paste0("### ", keyword))+1):(which(read_in_lines==paste0("### ", keyword))+lines)
+    data <- as.data.frame(read.table(textConnection(read_in_lines[read_in_data])))
+    data <- apply(data, 2, as.character)
+    colnames(data) <- as.character(data[1,])
+    data <- data[-1,]
+    return(data)
+}
+
+transform_sum <- function(DT, sum_cols){
+  
+    changeCols <- colnames(DT)
+  DT [,(changeCols):= lapply(.SD, as.character), .SDcols = changeCols]
+  DT [,(changeCols):= lapply(.SD, as.numeric), .SDcols = changeCols]
+  DT[, lapply(.SD,sum), by=sum_cols]
+
+}
+
+```
+
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+###sections to read in 
+### global methylation -- 3 lines
+### methylation vs. position 2*125+1
+### methylation vs. baseQ 2*42+1
+### coverage 201??+1
+FOLDER <- "/icgc/project/B220/lung_cell_methylome_mouse/sequencing/whole_genome_bisulfite_tagmentation_sequencing/view-by-pid/"
+setwd(FOLDER)
+
+methylation_qc_folder <- paste0(FOLDER, "/", annotation$directory, "/", annotation$sample, "/paired/merged-alignment/methylation/merged/methylationCallingMetrics/")
+
+methylation_qc_files <- lapply(methylation_qc_folder, dir, full.names=T)
+names(methylation_qc_files) <- samples
+
+repeat_read <- which(lapply(methylation_qc_files, length)==0)
+
+repeat_folder <- paste0(FOLDER, "/", annotation$directory[repeat_read], "/", annotation$sample[repeat_read], "/paired/merged-alignment/.merging_0/methylation/merged/methylationCallingMetrics/")
+methylation_qc_files[[repeat_read]] <- dir(repeat_folder, full.names = T)
+
+### global methylation -- 3 lines
+
+
+global_methylation <- list()
+global_methylation_sum <- list()
+methylation_vs_baseQ <- list()
+methylation_vs_position <- list()
+coverage <- list()
+
+for (sample in samples){
+
+  #global methylation
+  global_methylation[[sample]] <- as.data.table(do.call(rbind.data.frame,lapply(methylation_qc_files[[sample]], read_file_regions, keyword="global methylation", lines=3)))
+  changeCols <- c("mC", "C")
+ global_methylation[[sample]] [,(changeCols):= lapply(.SD, as.character), .SDcols = changeCols]
+ global_methylation[[sample]] [,(changeCols):= lapply(.SD, as.numeric), .SDcols = changeCols]
+ #summarizing by sample
+ global_methylation_sum[[sample]]  <- global_methylation[[sample]] [,.(context, mC, C)]
+ global_methylation_sum[[sample]] <- global_methylation_sum[[sample]][, lapply(.SD,sum), by=context]
+ global_methylation_sum[[sample]] <- global_methylation_sum[[sample]][, ratio:=mC/(mC+C)]
+ global_methylation_sum[[sample]] <- global_methylation_sum[[sample]][,sample_name:=sample]
+
+ 
+ # methylation and position for mbias
+  methylation_vs_position[[sample]] <- as.data.table(do.call(rbind.data.frame,lapply(methylation_qc_files[[sample]], read_file_regions, keyword="methylation vs. position", lines=251)))
+  #summarizing 
+   methylation_vs_position[[sample]] <- transform_sum( methylation_vs_position[[sample]], sum_cols = c("mate", "pos"))
+   methylation_vs_position[[sample]] <- methylation_vs_position[[sample]][,sample_name:=sample]
+
+ 
+ #methylation vs. base quality
+  methylation_vs_baseQ[[sample]] <-  as.data.table(do.call(rbind.data.frame,lapply(methylation_qc_files[[sample]], read_file_regions, keyword="methylation vs. baseQ", lines=85)))
+  #summarizing
+  methylation_vs_baseQ[[sample]] <- transform_sum( methylation_vs_baseQ[[sample]], sum_cols = c("mate", "baseQ"))
+  methylation_vs_baseQ[[sample]] <- methylation_vs_baseQ[[sample]][,sample_name:=sample]
+  #coverage
+  coverage[[sample]] <-   as.data.table(do.call(rbind.data.frame,lapply(methylation_qc_files[[sample]], read_file_regions, keyword="coverage", lines=202)))
+  coverage[[sample]] <- transform_sum( coverage[[sample]], sum_cols = c("cov"))
+  coverage[[sample]] <- coverage[[sample]][,sample_name:=sample]
+}
+
+
+
+methylation_vs_position <- rbindlist(methylation_vs_position)
+methylation_vs_baseQ <- rbindlist(methylation_vs_baseQ)
+coverage <- rbindlist(coverage)
+global_methylation_sum <- rbindlist(global_methylation_sum)
+global_methylation_sum <- global_methylation_sum[,coverage:=(mC+C)/no_of_cpgs]
+global_methylation_sum <- global_methylation_sum[context=="CH", coverage:=NA]
+
+global_methylation_sum <- global_methylation_sum[,conversion_rate:=1-ratio]
+global_methylation_sum <- global_methylation_sum[context=="CG", conversion_rate:=NA]
+
+save.image(file=file.path(DATA, "QC_data.RData"))
+
+
+```
+# Quality measurements  {.tabset .tabset-fade} 
+
+## Global methylation rate
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+load(file=file.path(DATA, "QC_data.RData"))
+g <- ggplot(data=global_methylation_sum[context=="CG",], aes(ratio, coverage))+geom_point(aes(color=sample_name))+theme_bw()+xlab("Methylation ratio")+ylab("Mean coverage")
+ggplotly(g)
+
+```
+
+
+
+## Conversion rate
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+g <- ggplot(data=global_methylation_sum[context=="CH",], aes(sample_name, conversion_rate))+geom_point()+theme_bw()+coord_flip()+xlab("Conversion rate")+ylab("")
+ggplotly(g)
+
+```
+
+## M-bias plot
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+methylation_vs_position <- methylation_vs_position[,Mratio:=CG.mC/(CG.mC+CG.C)]
+methylation_vs_position <- methylation_vs_position[,mate:=as.factor(mate)]
+g <- ggplot(data=methylation_vs_position, aes(pos, Mratio))+geom_line(aes(color=sample_name, linetype= mate))+theme_bw()+ylab("Methylation reatio")+xlab("position in read")
+ggplotly(g)
+
+```
+
+## Coverage
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+coverage <- coverage[,log_CG:=log(CG)]
+g <- ggplot(data=coverage)+geom_bar(aes(cov, log_CG), stat="identity")+facet_wrap(.~sample_name, nrow=6)+theme_bw()+xlab("Coverage, number of reads")+ylab("Number of CpGs, log10")
+ggplotly(g)
+
+```
+
+# Quality measurements, merged replicates  {.tabset .tabset-fade} 
+
+
+## Global methylation rate
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+reg_ex <- "(B220_)(.*)_(.*)"
+
+global_methylation_sum <- global_methylation_sum[,c("cell_type", "sample_type") :=
+                                                   list(gsub(reg_ex, "\\2", sample_name), gsub("[[:digit:]]", "", gsub(reg_ex, "\\3", sample_name)))]
+
+global_methylation_sum_merge <- global_methylation_sum[,lapply(.SD, sum), .SDcols=c("mC", "C"),by=.(cell_type, sample_type, context)]
+
+global_methylation_sum_merge<- global_methylation_sum_merge[,c("ratio", "coverage", "sample_name") := list(mC/(mC+C), (mC+C)/no_of_cpgs, paste0(cell_type, "_", sample_type))]
+
+g <- ggplot(data=global_methylation_sum_merge[context=="CG",], aes(ratio, coverage))+geom_point(aes(color=sample_name))+theme_bw()+xlab("Methylation ratio")+ylab("Mean coverage")
+ggplotly(g)
+
+```
+
+
+## Conversion rate
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+global_methylation_sum_merge <- global_methylation_sum_merge[,conversion_rate:=1-ratio]
+
+g <- ggplot(data=global_methylation_sum_merge[context=="CH",], aes(sample_name, conversion_rate))+geom_point()+theme_bw()+coord_flip()+xlab("Conversion rate")+ylab("")
+ggplotly(g)
+
+```
+
+
+## Coverage
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+coverage <- coverage[,c("cell_type", "sample_type") := list(gsub(reg_ex, "\\2", sample_name), gsub("[[:digit:]]", "", gsub(reg_ex, "\\3", sample_name)))]
+
+coverage_merge <- coverage[,lapply(.SD, sum), .SDcols=c("CG", "CH"),by=.(cell_type, sample_type, cov)]
+
+
+coverage_merge<- coverage_merge[,c("log_CG",  "sample_name") := list(log(CG), paste0(cell_type, "_", sample_type))]
+
+g <- ggplot(data=coverage_merge)+geom_bar(aes(cov, log_CG), stat="identity")+facet_wrap(.~sample_name, nrow=6)+theme_bw()+xlab("Coverage, number of reads")+ylab("Number of CpGs, log10")
+ggplotly(g)
+
+```
+
+
+

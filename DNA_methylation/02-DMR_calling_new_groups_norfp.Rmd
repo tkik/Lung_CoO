@@ -1,0 +1,230 @@
+---
+title: "DMR calling"
+author: "Reka Toth"
+date: "2019-10_02"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+
+```{r libraries, echo=TRUE, message=FALSE, warning=FALSE}
+
+library(methrix)
+library(data.table)
+library(HDF5Array)
+library(SummarizedExperiment)
+library(DSS)
+library(rGREAT)
+library(rtracklayer)
+library(Gviz)
+library(biomaRt)
+library(pheatmap)
+
+
+```
+
+```{r}
+callDMR_compare <- function (DMLresult, delta = 0, p.threshold = 1e-05, minlen = 50, 
+    minCG = 3, dis.merge = 100, pct.sig = 0.5) 
+{
+    ix.keep = !is.na(DMLresult$stat)
+    if (mean(ix.keep) < 1) 
+        DMLresult = DMLresult[ix.keep, ]
+    flag.multifactor = FALSE
+    if (dis.merge > minlen) 
+        dis.merge = minlen
+    if (delta > 0) {
+        if (flag.multifactor) {
+            stop("The test results is based on multifactor design, 'delta' is not supported")
+        }
+  
+        scores <- 1 - DMLresult$postprob.overThreshold
+    }
+    else {
+        scores <- DMLresult$pval
+    }
+    dmrs <- DSS:::findBumps(DMLresult$chr, DMLresult$pos, scores, cutoff = p.threshold, 
+        sep = 5000, dis.merge = dis.merge, pct.sig = pct.sig, 
+        minCG = minCG)
+    if (is.null(dmrs)) {
+        warning("No DMR found! Please use less stringent criteria. \n")
+        return(NULL)
+    }
+    nCG <- dmrs[, "idx.end.global"] - dmrs[, "idx.start.global"] + 
+        1
+    ix.good <- dmrs$length > minlen & nCG > minCG
+    if (sum(ix.good) == 0) {
+        warning("No DMR found! Please use less stringent criteria. \n")
+        return(NULL)
+    }
+    dmrs <- dmrs[ix.good, ]
+    nCG <- dmrs[, "idx.end.global"] - dmrs[, "idx.start.global"] + 
+        1
+    if (flag.multifactor) {
+        areaStat = rep(0, nrow(dmrs))
+        for (i in 1:nrow(dmrs)) {
+            ii = dmrs[i, "idx.start.global"]:dmrs[i, "idx.end.global"]
+            areaStat[i] = sum(DMLresult[ii, "stat"])
+        }
+        result <- data.frame(dmrs[, 1:4], nCG = nCG, areaStat = areaStat)
+    }
+    else {
+        meanMethy1 = meanMethy2 = areaStat = rep(0, nrow(dmrs))
+        for (i in 1:nrow(dmrs)) {
+            ii = dmrs[i, "idx.start.global"]:dmrs[i, "idx.end.global"]
+            meanMethy1[i] = mean(DMLresult[ii, "mu1"])
+            meanMethy2[i] = mean(DMLresult[ii, "mu2"])
+            areaStat[i] = sum(DMLresult[ii, "stat"])
+        }
+        result <- data.frame(dmrs[, 1:4], nCG = nCG, meanMethy1, 
+            meanMethy2, diff.Methy = meanMethy1 - meanMethy2, 
+            areaStat = areaStat)
+    }
+    ix = sort(abs(result$areaStat), decreasing = TRUE, index.return = TRUE)$ix
+    result[ix, ]
+}
+```
+
+# Read in methrix dataset 
+```{r open_methrix, echo=TRUE, message=TRUE, warning=FALSE}
+
+###########libraries and functions#############
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH ="V:/"} else {
+    PATH ="/C010-projects/"}
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH_Y="N:/"} else {
+    PATH_Y="/C010-datasets/"}
+
+DATA = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/data/norfp/")
+DATA_meth = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/data/")
+CODE = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/code/")
+RESULT = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/output/")
+CALLS = paste0(PATH_Y, "External/2018-10-Sotillo/data/methylDackel/")
+
+source(paste0(CODE, 'set_upp_dummy_vars.R'))
+
+################################################
+
+res <- readRDS(paste0(DATA_meth, "no_snpsXY_methrix.RDS"))
+
+new_groups <-  readRDS(paste0(DATA, "new_tumor_groups_HOPX.rds"))
+##remove MsCCSP_control01, because of bad QC values
+#res <- methrix::subset_methrix(res, samples = rownames(res@colData)[-which(res@colData$full_name=="MsCCSP_control01")])
+
+```
+
+```{r set_up_dummy_variables, echo=F, message=TRUE, warning=FALSE, eval=TRUE}
+
+##### create a data frame for storing the comparisons
+
+comparisons <- readRDS(file.path(DATA_meth, "comparisons.RDS"))
+comparisons <- comparisons[!grepl("rfp", comparisons$name),]
+comparisons <- comparisons[!is.na(comparisons$sample_type1),]
+###set up dummy variables
+
+res <- set_up_dummy_vars(res, comparisons)
+
+res@colData$MsCCSP_tumor_control_comparison[grep("tumor", res@colData$MsCCSP_tumor_control_comparison)] <- NA
+
+res@colData$MsCCSP_tumor_control_comparison[rownames(res@colData) %in% new_groups$CCSP] <- "MsCCSP_tumor" 
+
+
+res@colData$MsSPC_tumor_control_comparison[grep("tumor", res@colData$MsSPC_tumor_control_comparison)] <- NA
+res@colData$MsSPC_tumor_control_comparison[rownames(res@colData) %in% new_groups$SPC] <- "MsSPC_tumor" 
+
+res@colData$MsCCSP_MsSPC_tumor_comparison <- NA
+res@colData$MsCCSP_MsSPC_tumor_comparison[rownames(res@colData) %in% new_groups$SPC] <- "MsSPC_tumor" 
+res@colData$MsCCSP_MsSPC_tumor_comparison[rownames(res@colData) %in% new_groups$CCSP] <- "MsCCSP_tumor" 
+
+#exclude MsCCSP_control05, because it forms a separate cluster in MeDeCom
+
+res@colData["MsCCSP_control05",grep("compar", colnames(res@colData))] <- NA
+res@colData["MsCCSP_control01",grep("compar", colnames(res@colData))] <- NA
+
+```
+
+# DMR calling with DSS package
+
+```{r run_DMR_test, warning=FALSE, eval=TRUE}
+
+#####
+
+#DML_result <- list()
+#dmrseqs <- list()
+
+# for (comp  in comparisons){
+#   m <- res[,!is.na(res@colData[,comp])]
+#   m <- methrix2bsseq(m = m)
+#   dmrseqs[[comp]]<- dmrseq::dmrseq(bs =m, smooth = F, testCovariate = comp)
+# 
+# }
+
+for (comp in as.character(comparisons$name)){
+  cat("Start processing ", comp, ".")
+  start_proc_time = proc.time()
+  m <- res[,which(!is.na(res@colData[,comp]))]
+  m <- methrix::methrix2bsseq(m = m)
+  groups <- levels(factor(m@colData[,comp]))
+  snow <- SnowParam(workers = 4)
+  
+  if (grepl("Windows", Sys.getenv("OS"))){
+DML_result <- DMLtest(m, group1=which(m@colData[,comp]==groups[1]), group2=which(m@colData[,comp]==groups[2]), equal.disp = FALSE, smoothing = T, smoothing.span = 500, BPPARAM=snow)
+    } else {
+  DML_result <- DMLtest(m, group1=which(m@colData[,comp]==groups[1]), group2=which(m@colData[,comp]==groups[2]), equal.disp = FALSE, smoothing = T, smoothing.span = 500)}
+  saveRDS(DML_result, paste0(DATA, "DML_results_new_group_", comp, ".RDS"))
+  cat("-Done ", comp, " comparison! Finished in:",data.table::timetaken(start_proc_time),"\n") 
+  gc()
+}
+
+
+saveRDS(DML_result, paste0(RESULT, "DML_results_new_groups.RDS"))
+#DML_result <- readRDS( "Y:/External/2018-10-Sotillo/data_10_07/DML_results.RDS")
+```
+
+```{r run_DMR_calling, eval=TRUE, warning=FALSE}
+
+
+DML_result <- lapply(comparisons$name, function(x) readRDS(paste0(DATA, "DML_results_new_group_", x, ".RDS")))
+names(DML_result) <- comparisons$name
+cat("Identifying DMRs and DMLs. \n")
+DMLs <- list()
+DMRs <- list()
+
+for (comp  in comparisons$name){
+
+  DMLs[[comp]] <- callDML(DML_result[[comp]], delta=0.1, p.threshold=0.001)
+  DMRs[[comp]] <- callDMR(DML_result[[comp]], delta=0, p.threshold=0.001,
+                          minlen=50, minCG=3, dis.merge=50, pct.sig=0.5)
+
+}
+
+## CCSP specific in tumor
+
+
+#DMLs_tumor <- setDT(DMLs[["MsCCSP_MsSPC_tumor_comparison"]])
+#DMLs_control <- setDT(DMLs[["MsCCSP_MsSPC_control_comparison"]])
+#DMLs_control[,end:=pos]
+#DMLs_tumor[,end:=pos]
+#DMLs_control <- setDT(DMLs_control, key=c("chr", "pos", "end"))
+#DMLs_tumor <- setDT(DMLs_tumor, key=c("chr", "pos", "end"))
+
+#DML_cell_spec <- as.data.frame(foverlaps(DMLs_tumor, DMLs_control, mult="first", type="equal", nomatch = NULL))
+#DML_cell_spec <- DML_cell_spec[,-grep("i.", colnames(DML_cell_spec))]
+
+#res_DSS <- callDMR_compare(DML_cell_spec, delta=0, p.threshold=0.001,
+#minlen=50, minCG=3, dis.merge=50, pct.sig=0.5)
+
+#DMLs[["CCSP_tumor"]] <- DML_cell_spec
+#DMRs[["CCSP_tumor"]] <- res_DSS
+#cat("Saving.")
+
+saveRDS(DMLs, paste0(DATA, "DMLs_new_groups.RDS"))
+saveRDS(DMRs, paste0(DATA, "DMRs_new_groups.RDS"))
+#DMLs <- readRDS(paste0(DATA, "DMLs_noMsCCSP_control01_smoothed.RDS"))
+#DMRs <- readRDS(paste0(DATA, "DMRs_noMsCCSP_control01_smoothed.RDS"))
+```
+
+
+

@@ -1,0 +1,151 @@
+---
+title: "Prepare sites and datasets for MeDeCom analysis"
+author: "Reka Toth"
+date: '´r Sys.Date()´'
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+```{r libraries, echo=TRUE, message=FALSE, warning=FALSE}
+library(methrix)
+library(data.table)
+library(HDF5Array)
+library(SummarizedExperiment)
+library(ggplot2)
+library(knitr)
+library(pheatmap)
+library(ggsci)
+library(annotatr)
+library(rtracklayer)
+
+
+```
+
+
+# Read in methrix dataset 
+```{r open_results, echo=TRUE, message=TRUE, warning=FALSE}
+
+###########libraries and functions#############
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH ="V:/"} else {
+    PATH ="/C010-projects/"}
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH_Y="N:/"} else {
+    PATH_Y="/C010-datasets/"}
+
+DATA = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/data/norfp/")
+DATA_meth = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/data/")
+RESULT = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/output/")
+CALLS = paste0(PATH_Y, "External/2018-10-Sotillo/data/methylDackel/")
+
+
+Cellpaper <- c("#313695","#4575b4", "#74add1", "#abd9e9","#e0f3f8","#ffffbf","#fee090","#fdae61","#f46d43","#d73027","#a50026")
+
+mypal = pal_nejm()(7)
+ann_colors = list(
+    sample_name = c(control = mypal[1], tumor = mypal[2], "tumor-rfp"=mypal[3]),
+    cell_type = c(MsCCSP = mypal[4], MsSPC = mypal[5], MsHOPX=mypal[6], MsKrt5=mypal[7])
+)
+
+
+```
+
+```{r message=FALSE, warning=FALSE}
+################################################
+
+res <- readRDS(paste0(DATA_meth, "no_snps_methrix.RDS"))
+
+
+##remove MsCCSP_control01, because of bad QC values
+
+res <- methrix::subset_methrix(res, samples = attr(res@colData, "rownames")[-which(attr(res@colData, "listData")$full_name=="MsCCSP_control01")])
+res <- methrix::subset_methrix(res, samples = attr(res@colData, "rownames")[-which(attr(res@colData, "listData")$full_name=="MsCCSP_control05")])
+res <- methrix::subset_methrix(res, samples = rownames(res@colData)[-grep("rfp", res@colData$full_name)])
+
+#annotation <- read.delim(file=file.path(DATA, "annotation_table_TAGWGBS_02_10.txt"),stringsAsFactors = F)
+
+res <- methrix::subset_methrix(res, contigs = c(paste0("chr", 1:19)))
+
+```
+
+
+## Selection of the sites 
+Select sites that are overlapping with poised enhancers
+
+```{r}
+
+#annots_gr_0 = import.bed(con=file.path(PATH_Y, "/External/2018-10-Sotillo/data/chromhmm/lung_0_mm10_15_posterior.bed"), extraCols = c(Type="character", First="numeric", Second="character", Position1="integer", Position2="integer", Color="character"))
+annots_gr_0 = import.bed(con=file.path(PATH_Y, "/External/2018-10-Sotillo/data/chromhmm/P0_lung_15_segments.bed.gz"), extraCols = c(V4="character", Type="character"))
+
+#enhancer <- subset_methrix(res, regions = annots_gr_0[annots_gr_0$Type=="EnhPois1" | annots_gr_0$Type=="EnhPois2" ,])
+enhancer <- subset_methrix(res, regions = annots_gr_0[annots_gr_0$Type %in% c("En-Pd", "En-Pp") ,])
+
+
+anno <- as.data.frame(res@colData)[,c("sample_name", "cell_type")]
+
+heatmapping <- methrix::get_matrix(methrix::order_by_sd(enhancer)[1:30000,])
+#pheatmap(as.matrix(heatmapping), annotation_col = anno, colorRampPalette(Cellpaper, space = "rgb")(10), annotation_colors = ann_colors) 
+
+```
+
+```{r}
+enhancer_bsseq <- methrix2bsseq(enhancer)
+enhancer_bsseq <-bsseq::BSmooth(enhancer_bsseq, ns = 10, maxGap = 10000, )
+smoothed_meth <- bsseq::getMeth(enhancer_bsseq)
+rowsds <- rowSds(smoothed_meth, na.rm=T)
+heatmapping <- smoothed_meth[order(rowsds, decreasing = T)[1:30000],]
+heatmapping <- heatmapping[complete.cases(heatmapping),]
+#pheatmap(as.matrix(heatmapping), annotation_col = anno, colorRampPalette(Cellpaper, space = "rgb")(10), annotation_colors = ann_colors)
+saveRDS(smoothed_meth, file.path(DATA, "medecom/smoothed_bivalent_enhancers.RDS"))
+saveRDS(get_matrix(enhancer, add_loci = T), file.path(DATA, "medecom/bivalent_enhancers.RDS"))
+
+```
+
+
+## Selection of the sites 
+Select sites that are overlapping with active enhancers
+
+```{r}
+
+#enhancer <- subset_methrix(res, regions = annots_gr_0[annots_gr_0$Type=="Enh" ,])
+
+enhancer <- subset_methrix(res, regions = annots_gr_0[annots_gr_0$Type %in% c("En-Sd", "En-Sp"),])
+
+anno <- as.data.frame(res@colData)[,c("sample_name", "cell_type")]
+
+heatmapping <- methrix::get_matrix(methrix::order_by_sd(enhancer)[1:30000,])
+heatmapping <- heatmapping[complete.cases(heatmapping),]
+#pheatmap(as.matrix(heatmapping), annotation_col = anno, colorRampPalette(Cellpaper, space = "rgb")(10), annotation_colors = ann_colors) 
+
+```
+
+```{r}
+enhancer_bsseq <- methrix2bsseq(enhancer)
+enhancer_bsseq <-bsseq::BSmooth(enhancer_bsseq)
+smoothed_meth <- bsseq::getMeth(enhancer_bsseq)
+rowsds <- rowSds(smoothed_meth, na.rm=T)
+heatmapping <- smoothed_meth[order(rowsds, decreasing = T)[1:30000],]
+heatmapping <- heatmapping[complete.cases(heatmapping),]
+#pheatmap(as.matrix(heatmapping), annotation_col = anno, colorRampPalette(Cellpaper, space = "rgb")(10), annotation_colors = ann_colors)
+saveRDS(smoothed_meth, file.path(DATA, "medecom/smoothed_active_enhancers.RDS"))
+saveRDS(get_matrix(enhancer, add_loci = T), file.path(DATA, "medecom/active_enhancers.RDS"))
+
+```
+
+## Selection of the sites 
+Select sites that are overlapping with promoters
+
+```{r}
+
+
+#enhancer <- subset_methrix(res, regions = annots_gr_0[annots_gr_0$Type=="Enh" ,])
+
+enhancer <- subset_methrix(res, regions = annots_gr_0[annots_gr_0$Type %in% c("En-Sd", "En-Sp"),])
+
+anno <- as.data.frame(res@colData)[,c("sample_name", "cell_type")]
+
+heatmapping <- methrix::get_matrix(methrix::order_by_sd(enhancer)[1:30000,])
+#pheatmap(as.matrix(heatmapping), annotation_col = anno, colorRampPalette(Cellpaper, space = "rgb")(10), annotation_colors = ann_colors) 
+
+```

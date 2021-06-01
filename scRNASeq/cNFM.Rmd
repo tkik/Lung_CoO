@@ -1,0 +1,220 @@
+---
+title: "cNFM"
+author: "Reka Toth"
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output:
+ # html_notebook: default
+  workflowr::wflow_html:
+    toc: false
+    code_folding: "hide"
+#output: workflowr::wflow_html:
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r include=FALSE}
+
+knitr::opts_chunk$set(message=FALSE, warning=FALSE)
+```
+
+
+
+```{r message=FALSE, warning=FALSE}
+
+library(magrittr)
+library(clusterProfiler)
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(patchwork)
+library(SingleR)
+library(harmony)
+library(readxl)
+library(cerebroApp)
+library(ggsci)
+library(Connectome)
+library(kableExtra)
+library(pheatmap)
+
+
+###########libraries and functions#############
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH ="V:/"} else {
+    PATH ="/C010-projects/"}
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH_Y="N:/"} else {
+    PATH_Y="/C010-datasets/"}
+PATH_ICGC <- "/icgc/"
+
+
+DATA = paste0(PATH, "Reka/33_CoO_lung/scRNASeq/data")
+RESULT = "./output/"
+CODE = "./code/"
+CALLS = paste0(PATH_Y, "External/Sotillo_mouse_lung_cell/scRNASeq_CoO_lung/cellranger_output_22_11/")
+
+module_names <- c("Interferon", "Club", "Proliferating", "Stem-like tumour", "Immune activation/inflammation", 
+                  "Activated Club", "AT1-like tumour", "Normal AT2", "Regeneration-like tumour")
+
+```
+
+
+# cNMF modules
+
+Using cNMF on the single cell RNASeq analysis, gene activity modules were identified within the data. 
+The heatmap shows the 10 most important genes (highest activity score) for each modules. 
+
+```{r, fig.height=10, fig.width=5}
+k=9
+
+modules <- read.delim(file.path(DATA, paste0("cNMF/cNMF.gene_spectra_score.k_", k, ".dt_0_01.txt")), row.names = 1)
+modules <- t(modules)
+modules <- modules[-1,]
+colnames(modules) <- module_names
+
+write.xlsx(as.data.frame(modules), row.names = T, col.names=T, 
+            file="V:/Reka/33_CoO_lung/Figures/Supplementary_tables/module_genes.xlsx", sheetName="Gene_spectra_score", append=T)
+
+
+re_ordered <- data.frame(matrix(NA, nrow=k*10, ncol=k))
+rnames <- list()
+for (i in 1:k){
+  from <- (i*10-(k))
+  to <- i*10
+  re_ordered[from:to, ] <- modules[order(modules[,i], decreasing = T)[1:10],]
+  rnames[[i]] <-  rownames(modules[order(modules[,i], decreasing = T)[1:10],])
+  rnames[[i]] <- gsub(".", "-", rnames[[i]], fixed=T)
+}
+
+rnames_l <- rnames
+rnames <- unlist(rnames)
+rnames[duplicated(rnames)]<- paste0(rnames[duplicated(rnames)], "_1")
+rnames[duplicated(rnames)]<- paste0(rnames[duplicated(rnames)], "_2")
+rownames(re_ordered) <- rnames
+colnames(re_ordered) <- module_names
+pheatmap(re_ordered, cluster_cols = F, cluster_rows = F, scale = "row", fontsize_row = 5)
+names(rnames_l) <-module_names
+
+```
+
+
+## Over-representation analysis
+
+For each module, the genes with highest activity were included into an over-representation analysis using KEGG and GO BP databases. 
+
+
+```{r}
+library(org.Mm.eg.db)
+suppressPackageStartupMessages(library(clusterProfiler))
+ego_list <- list()
+for (i in module_names){
+gene.df <- bitr(rownames(modules)[order(modules[,i], decreasing = T)][1:200], fromType = "SYMBOL",
+        toType = c("ENTREZID"),
+        OrgDb = org.Mm.eg.db)
+
+kk <- enrichKEGG(gene         = gene.df$ENTREZID,
+                 organism     = 'mouse',
+                 pvalueCutoff = 0.05)
+write.xlsx(as.data.frame(kk@result[kk@result$p.adjust<0.05,]), row.names = F, col.names=T, file="V:/Reka/33_CoO_lung/Figures/Supplementary_tables/module_genes.xlsx", sheetName=paste0(gsub(" |/", "_", gsub("inflammation", "inf", i)), "_KEGG_enrichment"), append=T)
+
+
+kkm <- enrichKEGG(gene         = gene.df$ENTREZID,
+                 organism     = 'mouse',
+                 pvalueCutoff = 0.05)
+
+ego_list[[i]] <- enrichGO(gene          = gene.df$ENTREZID,
+                OrgDb         = org.Mm.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+        readable      = TRUE)
+write.xlsx(as.data.frame(ego_list[[i]]@result[ego_list[[i]]@result$p.adjust<0.05,]), row.names = F, col.names=T, 
+            file="V:/Reka/33_CoO_lung/Figures/Supplementary_tables/module_genes.xlsx", sheetName=paste0(gsub(" |/", "_", gsub("inflammation", "inf", i)), "_GO_enrichment"), append=T)
+
+ego_list[[i]]@result$module <- i
+p1 <- dotplot(ego_list[[i]], showCategory=30) + ggtitle(paste0("GO dotplot for module ", i))
+
+print(p1)
+
+p2 <- dotplot(kk, showCategory=30) + ggtitle(paste0("KEGG dotplot for module ", i))
+
+print(p2)
+
+p2m <- dotplot(kkm, showCategory=30) + ggtitle(paste0("KEGG dotplot for module ", i))
+
+print(p2m)
+
+
+wpgmtfile <- paste0(DATA, "/wikipathways-20210310-gmt-Mus_musculus.gmt")
+wp2gene <- read.gmt(wpgmtfile)
+wp2gene <- wp2gene %>% tidyr::separate(term, c("name","version","wpid","org"), "%")
+wpid2gene <- wp2gene %>% dplyr::select(wpid, gene) #TERM2GENE
+wpid2name <- wp2gene %>% dplyr::select(wpid, name) #TERM2NAME
+
+ewp <- enricher(gene.df$ENTREZID, TERM2GENE = wpid2gene, TERM2NAME = wpid2name)
+try(write.xlsx(as.data.frame(ewp@result[ewp@result$p.adjust<0.05,]), row.names = F, col.names=T, file="V:/Reka/33_CoO_lung/Figures/Supplementary_tables/module_genes.xlsx", sheetName=paste0(gsub(" |/", "_", gsub("inflammation", "inf", i)), "_wikipathway_enrichment"), append=T))
+
+wp <- dotplot(ewp, showCategory=30) + ggtitle(paste0("Wikipathways dotplot for module ", i))
+
+try(print(wp))
+
+
+}
+ego_list <- do.call(rbind.data.frame, lapply(ego_list, function(x) x@result[x@result$qvalue<0.05,]))
+DT::datatable(ego_list)
+
+
+```
+
+
+## Module scores
+
+A module score for the genes with the highest activity score for each modules were calculated. 
+
+
+```{r}
+seu.dat <- readRDS(file=file.path(DATA, "harmony_integrated_slingshot_3rd_no_ciliated.RDS"))
+
+seu.dat$seurat_clusters <- recode(as.character(seu.dat$seurat_clusters), "2" = "1", "0" = "2", "7"="6", "6"="7", "11"="8", "10"="9", "9"="10", "13"="11", "8"="12", "12"="13", "1"="14")
+
+seu.dat$seurat_clusters <- factor(seu.dat$seurat_clusters, levels=c(0:14))
+
+seu.dat <- SetIdent(seu.dat, value="seurat_clusters")
+
+#seu.dat@meta.data <- seu.dat@meta.data[,1:89]
+seu.dat <- AddModuleScore(
+  object = seu.dat,
+  features = rnames_l,
+  ctrl = 100,
+  name = names(rnames_l)
+)
+
+
+####module scores, combined####
+
+mean_sig_clusters <- data.frame(module=NA, cluster=NA, mean_z=NA) # define empty obj
+for (modules in colnames(seu.dat@meta.data)[-(1:(ncol(seu.dat@meta.data)-k))][1:k]){
+for (seurat_clusters in  levels(seu.dat)) {
+  mean_sig_clusters <- rbind(mean_sig_clusters, data.frame(module=modules,cluster=seurat_clusters, mean_z=mean(seu.dat@meta.data[which(Cells(seu.dat) %in%  WhichCells(seu.dat,ident=seurat_clusters)), modules])))
+}
+}
+mean_sig_clusters <- mean_sig_clusters[!is.na(mean_sig_clusters$module),]
+mean_sig_clusters$mean_z <- as.numeric(mean_sig_clusters$mean_z)
+mean_sig_clusters$cluster <- factor(mean_sig_clusters$cluster, levels=rev(1:14)) 
+#ggplot(mean_sig_clusters, aes(module, cluster))+geom_tile(mapping = aes(fill=mean_z))
+
+mean_sig_clusters$module <- mean_sig_clusters$module %>%
+  gsub("[[:digit:]]{1}$","", x = .) %>%
+  gsub("."," ", x = ., fixed=T)
+#  gsub(".", " ", x = ., fixed=T) 
+mean_sig_clusters$module <-   factor(mean_sig_clusters$module, levels=unique(mean_sig_clusters$module))
+#mean_sig_clusters <- mean_sig_clusters[-1,]
+p7 <- ggplot(mean_sig_clusters, aes(module, cluster))+geom_tile(mapping = aes(fill=mean_z))+
+  scale_fill_gradient2(low="darkblue", high="darkred", mid="white", midpoint=0, name="Module score")+
+  ylab("Clusters")+
+xlab("Signatures")+ theme_minimal()+
+  theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1))
+p7
+```
+

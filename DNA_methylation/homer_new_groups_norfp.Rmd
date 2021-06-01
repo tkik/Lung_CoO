@@ -1,0 +1,352 @@
+---
+title: "Motif enrichment analysis on enhancer DMRs"
+author: "Reka Toth"
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+
+
+```{r libraries, message=FALSE, warning=FALSE, include=FALSE}
+
+#Libraries
+library(DSS)
+library(bsseq)
+library(doParallel)
+library(ChIPseeker)
+library(foreach)
+library(SummarizedExperiment)
+library(rtracklayer)
+library(HDF5Array)
+library(org.Mm.eg.db)
+library(homerkit)
+library(ggpubr)
+library(plotly)
+library(kableExtra)
+library(dplyr)
+library(xlsx)
+
+```
+
+```{r directories, message=TRUE, warning=FALSE, include=FALSE}
+
+
+###########libraries and functions#############
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH ="V:/"} else {
+    PATH ="/C010-projects/"}
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH_Y="N:/"} else {
+    PATH_Y="/C010-datasets/"}
+
+DATA = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/data/norfp/")
+DATA_meth = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/data/")
+RESULT = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/output/")
+CALLS = paste0(PATH_Y, "External/2018-10-Sotillo/data/methylDackel/")
+CODE = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/code/")
+HOMER_RESULTS <- paste0(DATA, "homer_res_new_groups_norfp/")
+
+
+Cellpaper <- c("#313695","#4575b4", "#74add1", "#abd9e9","#e0f3f8","#ffffbf","#fee090","#fdae61","#f46d43","#d73027","#a50026")
+
+```
+
+```{r functions, include=FALSE}
+
+#functions
+label_func <- function(x){
+  breaks <- x
+  breaks[breaks>=200] <- ">=200"
+  breaks
+}
+bubblePlot <- function(combined_data){
+    combined_data$significant<- ifelse(combined_data$q_value_benjamini < (0.05), "Yes", "No" )
+    combined_data$percent_of_target_sequences_with_motif <-
+      as.numeric(sapply(strsplit(combined_data$percent_of_target_sequences_with_motif ,"%", fixed=TRUE),`[`, 1))
+     combined_data$MotifName <- factor(combined_data$MotifName, levels = unique(combined_data$MotifName[order(combined_data$log_p, decreasing = T)]))
+ # combined_data$log_p.adjusted_neg[is.infinite(combined_data$log_p.adjusted_neg)] <- 200    
+    ggplot(data = as.data.frame(combined_data), aes(y=MotifName, x=direction))+coord_fixed()+
+    geom_point(aes(size=log_p, fill=percent_of_target_sequences_with_motif), pch=21)+
+    scale_fill_gradient2( midpoint = 1, low="darkblue", high="darkred", name = "% of target sequences with motif")+
+    scale_colour_manual(values=c("grey", "black"), name="q-value < 0.05", drop=FALSE)+
+    scale_size(name="p-value\n(-log10)", labels = label_func) +
+    scale_y_discrete(limits=rev(levels(as.factor(combined_data$MotifName))))+
+    theme(text =element_text(size=14, color="black", family = "sans"),
+          axis.ticks = element_blank(), axis.line = element_blank(), 
+          axis.text.x=element_text(size=12, angle = 45, hjust=1, color="black", family="sans"),
+          axis.text.y=element_text(size=12, family="sans", color="black"))+
+    scale_x_discrete(name=NULL)+
+    theme(legend.text=element_text(size=12, family="sans"), 
+          legend.title=element_text(size=12, family= "sans"),
+          legend.background = element_rect(fill="white", color="white"),
+          panel.background =  element_rect(fill="white"), panel.grid.major = element_line(color="lightgrey"),
+          legend.key = element_rect(fill="white"))+rremove("ylab") 
+}
+
+
+```
+
+```{r message=FALSE, warning=FALSE}
+
+DMRs <- readRDS(file.path(DATA, "DMRs_new_groups.RDS"))
+comparisons_all <- names(DMRs)
+
+#names(dmls) <- labels
+
+```
+
+## Read in HOMER results
+
+```{r message=FALSE, warning=FALSE}
+
+homer_results <- list()
+
+for (comp in comparisons_all){
+  homer_results[[comp]] <- list()
+  homer_results[[comp]][["gain"]] <- try(read_homer_output(paste0(HOMER_RESULTS, gsub(" ", "_", comp),"_gain")))
+  try(homer_results[[comp]][["gain"]]$known_motif_table$direction <- "gain")
+  homer_results[[comp]][["loss"]] <- try(read_homer_output(paste0(HOMER_RESULTS, gsub(" ", "_", comp),"_loss")))
+   try(homer_results[[comp]][["loss"]]$known_motif_table$direction <- "loss")
+}
+
+for (comp in names(homer_results)){
+if (class(homer_results[[comp]]$gain)=="try-error")
+  homer_results[[comp]]$gain <- NULL
+
+if (class(homer_results[[comp]]$loss)=="try-error")
+  homer_results[[comp]]$loss <- NULL
+
+  }
+
+```
+
+## Enrichment results, known motifs{.tabset .tabset-fade .tabset-pills} 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis', fig.height=10}
+#loop over comparisons and plot them
+homer_results_mod<- homer_results
+known_motif_results <- list()
+known_motif_results_all <- list()
+g <- list()
+
+#DAR_list_sub_plot<-list()
+
+for (comp in names(homer_results)){
+    homer_results_mod[[comp]] <- lapply(homer_results_mod[[comp]], function(x){
+    x$known_motif_table$MotifName <- sapply(strsplit(x$known_motif_table$motif_name ,"(", fixed=TRUE),`[`, 1)
+     x$known_motif_table$family <- gsub("(.*)[[:punct:]]{1}([[:alnum:]]+,?[[:alnum:]]*)[[:punct:]]{1},?[[:alnum:]]*/.+/Homer", "\\2",
+                                           x$known_motif_table$motif_name)
+     x$known_motif_table$family[nchar(x$known_motif_table$family)>20] <- NA
+    x$known_motif_table$MotifName <- toupper(x$known_motif_table$MotifName)
+    x$known_motif_table$log_p <- -log10(p.adjust(x$known_motif_table$p_value, method = "BH"))
+    x$known_motif_table$FC <- as.numeric(gsub("%", "", x$known_motif_table$percent_of_target_sequences_with_motif))/as.numeric(gsub("%", "",
+                                            x$known_motif_table$percent_of_background_sequences_with_motif))
+    x
+    })
+    
+    known_motif_results[[comp]] <- lapply(homer_results_mod[[comp]], function(x){
+    x <- x$known_motif_table[x$known_motif_table$q_value_benjamini < 0.1,]
+    x <- as.data.frame(x[,c("motif_name", "family", "consensus", "FC","p_value","log_p_value",                                 
+                            "q_value_benjamini",                                   
+                            "percent_of_target_sequences_with_motif", "percent_of_background_sequences_with_motif", 
+                            "direction", "MotifName", "log_p")])
+    x
+    })
+    
+  
+    known_motif_results_all[[comp]] <- lapply(known_motif_results[[comp]], function(x){
+    x <- as.data.frame(x[,c("MotifName", "family", "FC", "log_p", "direction")])
+    x <- x[order(x$log_p, decreasing = T),]
+    colnames(x)[colnames(x)=="log_p"] <- paste0("log_p_", x$direction[1], "_", comp) 
+    colnames(x)[colnames(x)=="FC"] <- paste0("FC_", x$direction[1], "_", comp)
+    x <- x[,1:4]
+    x <- x[!duplicated(x$MotifName),]
+    x
+    })
+    
+    known_motif_results[[comp]] <- rbind(known_motif_results[[comp]]$gain[1:min(20, nrow(known_motif_results[[comp]]$gain)),], 
+                                           known_motif_results[[comp]]$loss[1:min(20,nrow(known_motif_results[[comp]]$loss)),])
+    
+    
+    if (!is.null(known_motif_results[[comp]]) && nrow(known_motif_results[[comp]])>0){
+    g[[comp]] <- bubblePlot(known_motif_results[[comp]])+ggtitle(comp) 
+    #ggsave(g[[comp]], filename = file.path(HOMER_RESULTS, paste0(gsub(" ", "_", comp), "_bubblePlot.pdf")), height = nrow(known_motif_results[[comp]])/4)
+    }
+}
+```
+
+```{r}
+
+
+for (i in 1:length(known_motif_results_all)){
+ known_motif_results_all[[i]] <- merge(known_motif_results_all[[i]][[1]], known_motif_results_all[[i]][[2]], by=c("MotifName", "family"), sort=F, all=T)
+}
+
+ known_motif_results_merged <- merge(known_motif_results_all[[1]], known_motif_results_all[[2]], by=c("MotifName", "family"), sort=F, all=T)
+for (i in 3:4){
+ known_motif_results_merged <- merge(known_motif_results_merged, known_motif_results_all[[i]], by=c("MotifName", "family"), sort=F, all=T)
+}
+
+ known_motif_results_merged[,-(1:2)][is.na(known_motif_results_merged[,-(1:2)])] <- 0
+ 
+ 
+ saveRDS(known_motif_results_merged, file = file.path(DATA, "figures/homer_results_merged.RDS"))
+ 
+```
+
+### Combined plot
+
+```{r}
+combined_data <- do.call(rbind.data.frame, known_motif_results)
+combined_data$significant<- ifelse(combined_data$q_value_benjamini < (0.05), "Yes", "No" )
+combined_data$percent_of_target_sequences_with_motif <-
+as.numeric(sapply(strsplit(combined_data$percent_of_target_sequences_with_motif ,"%", fixed=TRUE),`[`, 1))
+combined_data$percent_of_background_sequences_with_motif <-
+as.numeric(sapply(strsplit(combined_data$percent_of_background_sequences_with_motif ,"%", fixed=TRUE),`[`, 1))
+combined_data$FC <- combined_data$percent_of_target_sequences_with_motif/combined_data$percent_of_background_sequences_with_motif
+combined_data$MotifName <- factor(combined_data$MotifName, levels = unique(combined_data$MotifName[order(combined_data$log_p, decreasing = T)]))
+
+p <- ggplot(data = as.data.frame(combined_data), aes(y=MotifName, x=comp))+coord_fixed(ratio = 0.6)+facet_grid(~ direction)+
+geom_point(aes(size=log_p, fill=FC), pch=21)+
+scale_fill_gradient2( midpoint = 1, low="darkblue", high="darkred", name = "Fold change")+
+scale_colour_manual(values=c("grey", "black"), name="q-value < 0.05", drop=FALSE)+
+scale_size(name="p-value\n(-log10)", labels = label_func) +
+scale_y_discrete(limits=rev(levels(as.factor(combined_data$MotifName))))+
+theme(text =element_text(size=14, color="black", family = "sans"),
+axis.ticks = element_blank(), axis.line = element_blank(),
+axis.text.x=element_text(size=10, angle = 45, hjust=1, color="black", family="sans"),
+axis.text.y=element_text(size=10, family="sans", color="black"))+
+scale_x_discrete(name=NULL)+
+theme(legend.text=element_text(size=12, family="sans"),
+legend.title=element_text(size=12, family= "sans"),
+legend.background = element_rect(fill="white", color="white"),
+panel.background =  element_rect(fill="white"), panel.grid.major = element_line(color="lightgrey"),
+legend.key = element_rect(fill="white"))+rremove("ylab")
+
+print(p)
+
+```
+
+
+```{r}
+
+for (comp in names(g)){
+    cat('\n')  
+   
+    cat("### Comparisons ", comp, " \n")
+   
+     print(g[[comp]])
+    #else {
+    #    print(p)
+    # }
+      cat('\n')
+}
+
+
+
+```
+
+## Results in tables{.tabset .tabset-fade .tabset-pills}
+
+```{r, results='asis'}
+
+for (comp in names(g)){
+      cat('\n')  
+   
+    cat("### Comparisons ", comp, " \n")
+   
+   write.xlsx(as.data.frame(known_motif_results[[comp]]), row.names = F, col.names=T, 
+            file=paste0(PATH, "Reka/33_CoO_lung/Figures/Supplementary_tables/motif_enrichment.xlsx"), sheetName=as.character(comp), append=T)
+            
+  print(knitr::kable(known_motif_results[[comp]]) %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "600px"))
+       cat('\n')
+  }
+
+```
+
+
+```{r}
+
+
+df <- known_motif_results[[1]] %>%
+      select("family", "FC", "log_p", "direction", "MotifName") %>% 
+      distinct(MotifName, direction, .keep_all = TRUE)
+df$comp <- names(known_motif_results)[1]
+
+for (i in 2:length(known_motif_results)){
+  df2 <- known_motif_results[[i]] %>%
+      select("family", "FC", "log_p", "direction", "MotifName") %>% 
+      distinct(MotifName, direction, .keep_all = TRUE)
+  df2$comp <- names(known_motif_results)[i]
+  
+  df <- rbind(df, df2)
+  
+}
+
+df <- df[!(df$family %in% c("CTF", "Stat", "RHD", "MADS", "CCAAT")),]
+
+
+
+df <- df %>% mutate(comp=recode(comp, "MsSPC_tumor_control_comparison"="Sftpc normal vs. tumour", 
+                                "MsCCSP_tumor_control_comparison"="Scgb1a1 normal vs. tumour", 
+                                "MsCCSP_MsSPC_tumor_comparison"="Scgb1a1 tumour vs. Sftpc tumour", 
+                                "MsCCSP_MsSPC_control_comparison"="Scgb1a1 normal vs. Sftpc normal")) %>% 
+  mutate(direction=recode(direction, "gain"="Hypermethylation \n in second",
+                                  "loss"="Hypomethylation \n in second"))
+
+
+df$family[df$family=="box"] <- "Homeobox"
+df$family[df$family=="forkhead"] <- "Forkhead"
+df$family[df$family=="TEA"] <- "TEAD"
+df <- df[!is.na(df$family),]
+df <- df[!(df$family %in% c("CTF", "Stat", "RHD", "MADS", "CCAAT")),]
+
+df2 <- df[df$family %in% c("bZIP", "Forkhead", "IRF"),]
+p <- ggplot(data = df, aes(y=MotifName, x=comp))+facet_grid(family~direction, drop=T, scales = "free_y", space = "free")+
+      geom_point(aes(size=log_p, fill=FC), pch=21)+
+      scale_fill_gradient2( midpoint = 1, low="darkblue", high="darkred", name = "Fold change")+
+      scale_size(name="-log10 p") +
+      theme(text =element_text(size=11, color="black", family = "sans"),
+      axis.ticks = element_blank(), axis.line = element_blank(),
+      axis.text.x=element_text(size=8, angle = 45, hjust=1, color="black", family="sans"),
+     axis.text.y=element_text(size=7, family="sans", color="black"))+
+     scale_x_discrete(name=NULL)+
+  theme(legend.text=element_text(size=10, family="sans"),
+        strip.background =element_rect(fill="darkgrey"),
+        strip.text = element_text(colour = 'black'),
+  legend.title=element_text(size=10, family= "sans"),
+  legend.background = element_rect(fill="white", color="white"),
+  panel.background =  element_rect(fill="white"), panel.grid.major = element_line(color="lightgrey"),
+  legend.key = element_rect(fill="white"), plot.margin = margin(0.2, 0.2, 0.2, 2, "cm"))
+print(p)
+ggsave(plot = p, "../Figures/methylation/TFBS.pdf", width = 5, height = 12)
+
+p <- ggplot(data = df2, aes(y=MotifName, x=comp))+facet_grid(family~direction, drop=T, scales = "free_y", space = "free")+
+      geom_point(aes(size=log_p, fill=FC), pch=21)+
+      scale_fill_gradient2( midpoint = 1, low="darkblue", high="darkred", name = "Fold change")+
+      scale_size(name="-log10 p") +
+      theme(text =element_text(size=11, color="black", family = "sans"),
+      axis.ticks = element_blank(), axis.line = element_blank(),
+      axis.text.x=element_text(size=8, angle = 45, hjust=1, color="black", family="sans"),
+     axis.text.y=element_text(size=7, family="sans", color="black"))+
+     scale_x_discrete(name=NULL)+
+  theme(legend.text=element_text(size=10, family="sans"),
+        strip.background =element_rect(fill="darkgrey"),
+        strip.text = element_text(colour = 'black'),
+  legend.title=element_text(size=10, family= "sans"),
+  legend.background = element_rect(fill="white", color="white"),
+  panel.background =  element_rect(fill="white"), panel.grid.major = element_line(color="lightgrey"),
+  legend.key = element_rect(fill="white"), plot.margin = margin(0.2, 0.2, 0.2, 2, "cm"))
+print(p)
+ggsave(plot = p, "../Figures/methylation/TFBS_short.pdf", width = 5, height = 8)
+
+
+
+
+
+```
+

@@ -1,0 +1,97 @@
+---
+title: "QC measurements, lung CoO project"
+author: "Reka Toth"
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+#Read in MethylDackel files 
+```{r libraries, message=TRUE, warning=FALSE, include=FALSE}
+
+
+library(methrix)
+library(data.table)
+library(HDF5Array)
+library(SummarizedExperiment)
+library(dmrseq)
+library(DSS)
+library(rGREAT)
+library(rtracklayer)
+library(Gviz)
+library(biomaRt)
+library(pheatmap)
+
+```
+
+```{r read_methrix, echo=TRUE, message=TRUE, warning=FALSE}
+
+###########libraries and functions#############
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH ="V:/"} else {
+    PATH ="/C010-projects/"}
+if (grepl("Windows", Sys.getenv("OS"))){
+  PATH_Y="N:/"} else {
+    PATH_Y="/C010-datasets/"}
+
+DATA = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/data/")
+RESULT = paste0(PATH, "Reka/33_CoO_lung/CoO_Lung_Cancer/output/")
+CALLS = paste0(PATH_Y, "External/2018-10-Sotillo/data/methylDackel/")
+SNPS = paste0(PATH_Y, "External/2018-10-Sotillo/data/snps/")
+
+#source(paste0(PATH, 'Reka/02-PPP/source/modified_rGreat_anno.R'))
+
+################################################
+
+ annotation <- read.delim(file=file.path(DATA, "annotation_table_TAGWGBS_16_2_2021.txt"), 
+                          stringsAsFactors = F, row.names=1)
+ #methylation_folder <- paste0(FOLDER, "/", annotation$directory, "/", annotation$sample, "/paired/merged-alignment/methylation/merged/methylationCalling")
+
+ methylation_files <- dir(CALLS, full.names=T, pattern=".bedGraph")
+ samples <- gsub(CALLS, "", methylation_files)
+ samples <- gsub("_CpG.bedGraph", "", samples)
+ names(methylation_files) <- samples
+ annotation <- annotation[names(methylation_files),]
+ 
+ cpgs <- extract_CPGs("BSgenome.Mmusculus.UCSC.mm10")
+ knitr::kable(annotation)
+ res <- read_bedgraphs(files=methylation_files, pipeline = "MethylDackel", collapse_strands  = T, vect = T, 
+                       vect_batch_size = 5, h5=F, ref_cpgs=cpgs, ref_build = "mm10", stranded=T, coldata = annotation)
+ saveRDS(res, file = paste0(DATA, "methrix_object.RDS"))
+ #res <- readRDS(file = paste0(DATA, "methrix_object.RDS")) 
+ 
+```
+
+
+#Remove SNPs and save the result
+
+
+```{r report, echo=TRUE, message=TRUE, warning=FALSE, eval=TRUE}
+
+#res <- readRDS(paste0(DATA, "methrix_object.RDS"))
+methrix_report(res, output_dir = paste0(RESULT, "QC_report") , n_thr = 1)
+
+```
+
+```{r remove_snps, echo=TRUE, message=TRUE, warning=FALSE, eval=TRUE}
+
+snps <- readRDS(paste0(DATA, "snp_data_5_strains_14_10.RDS"))
+
+setnames(snps, "V1", "chr")
+setnames(snps, "V2", "start")
+setnames(snps, "V3", "end")
+snps[,chr:=paste0("chr", chr)]
+setcolorder(snps, c( "chr", "start", "end", colnames(snps)[!(colnames(snps) %in% c("chr", "start", "end"))]))
+
+res <- methrix::region_filter(res, snps, type="within")
+
+saveRDS(res, paste0(DATA, "no_snps_methrix.RDS"))
+
+```
+
+```{r new_report, echo=TRUE, message=TRUE, warning=FALSE, eval=TRUE}
+
+methrix_report(res, output_dir = paste0(RESULT, "QC_report_no_SNPs") , n_thr = 1, recal_stats = T)
+
+```
